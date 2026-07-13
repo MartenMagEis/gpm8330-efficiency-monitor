@@ -119,7 +119,7 @@ static void drawSetupScreen(const DisplayState& s) {
   tft.drawString("IP: " + apIp, 10, 116);
 
   drawButton(SETUP_LOG_BTN_X, SETUP_LOG_BTN_Y, SETUP_LOG_BTN_W, SETUP_LOG_BTN_H,
-             s.datalogEnabled ? "CSV-Log: AN" : "CSV-Log: AUS", s.datalogEnabled);
+             s.datalogEnabled ? "Log Stop" : "Log Start", s.datalogEnabled);
 }
 
 void displayRender(const DisplayState& s) {

@@ -315,8 +315,8 @@ String generiereWebseite() {
   html += "<tr><td id='p1'>Lade...</td><td id='p2'>Lade...</td><td id='p3'>Lade...</td></tr>";
   html += "<tr><td id='percent1'>Lade...</td><td id='percent2'>Lade...</td><td id='percent3'>Lade...</td></tr></table>";
   html += "<h2><span id='wirkungsgradText'>Wirkungsgrad</span>: <span id='wirkungsgrad'>Lade...</span></h2>";
-  html += "<div style='font-size:0.5em;margin-top:-10px;'>Min/Max: <span id='minmax'>--</span></div>";
-  html += "<div id='stufenInfo' style='display:none;font-size:0.6em;margin-top:-10px;'>";
+  html += "<div style='font-size:0.6em;margin:2px 0;'>Min/Max: <span id='minmax'>--</span></div>";
+  html += "<div id='stufenInfo' style='display:none;font-size:0.6em;margin:2px 0;'>";
   html += "<div>Stufe 1 (Input &rarr; Zwischenkreis): <span id='stufe1'>--</span></div>";
   html += "<div>Stufe 2 (Zwischenkreis &rarr; Output): <span id='stufe2'>--</span></div>";
   html += "</div>";
