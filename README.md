@@ -1,8 +1,8 @@
 # GWInstek GPM-8330 Efficiency Monitor
 
-ESP32 firmware that bridges a GW Instek **GPM-8330/8320** power meter (RS-232/SCPI) to a small
-WiFi web dashboard. It polls the active power of all three meter channels and computes an
-efficiency figure between them.
+ESP32 firmware that bridges a GW Instek **GPM-8330/8320** power meter (RS-232/SCPI) to a WiFi web
+dashboard and a local touch TFT. It polls the active power of all three meter channels and
+computes an efficiency figure between them.
 
 ## How it works
 
@@ -16,6 +16,10 @@ efficiency figure between them.
   every 200 ms.
 - A small web server (`WiFi.softAP`, SSID `ESP32-GPM8330`) serves `/` (dashboard),
   `/data` (JSON), and `/rmt?enabled=0|1` to pause/resume polling.
+- `computeMetrics()` in `src/main.cpp` is the single place that turns the three raw channel
+  powers into percentages, channel roles and efficiency figures — both `/data` (JSON) and the
+  on-device touch display (`src/display.cpp`) render from the same `DisplayState` struct, so the
+  two UIs can't drift out of sync.
 
 ### Channel wiring / efficiency calculation
 
@@ -55,6 +59,21 @@ swap which channel carries the highest power.
   between the ESP32 and the meter's DB-9 port).
 - Meter RS-232 settings must match the firmware: 115200 baud, 8N1, no flow control
   (`SYSTEM CONFIG` → I/O Model → RS232 → Baud Rate).
+- AZ-Delivery 2.4" 240x320 SPI TFT (ILI9341) with XPT2046 resistive touch:
+
+  | Display pin | ESP32 GPIO |
+  |---|---|
+  | CS     | 5  |
+  | RESET  | 33 |
+  | D/C    | 27 |
+  | SDI (MOSI) | 19 |
+  | SCK    | 18 |
+  | SDO (MISO) | 23 |
+  | T_CS   | 14 |
+  | T_IRQ  | 32 (wired but unused — TFT_eSPI polls touch over SPI, not via interrupt) |
+
+  All pin/driver config lives in `platformio.ini`'s `build_flags` (no edits to the TFT_eSPI
+  library itself); adjust it there if you rewire anything.
 
 ## Build & flash (PlatformIO)
 
@@ -69,16 +88,30 @@ Adjust the `board` in `platformio.ini` if your ESP32 module differs from a gener
 
 ## Usage
 
+### Web dashboard
+
 1. Power the ESP32; connect to the `ESP32-GPM8330` WiFi AP (password `12345678`).
 2. Open `http://192.168.4.1/` in a browser.
 3. Press **RMT ON** to start polling the meter; **RMT OFF** pauses communication.
 4. Choose **Parallel** (1 input + 2 outputs) or **Kaskade** (3-stage series measurement)
    depending on how the meter is wired.
 
+### Touch display
+
+The TFT mirrors the same data and lets you toggle both settings without the web UI. On the very
+first boot it shows a **touch calibration screen** (`tft.calibrateTouch`) — follow the on-screen
+prompts once; the calibration is stored in NVS (via `Preferences`) and reused on every later boot.
+To force recalibration, erase flash (`pio run -t erase`) or clear the `gpm8330` NVS namespace.
+
+The two on-screen buttons are single-tap toggles (not separate ON/OFF buttons like the web UI):
+- **RMT ON / RMT OFF** — same as the web button.
+- **Parallel / Kaskade** — same mode switch as the web buttons.
+
 ## Repo layout
 
 ```
-src/main.cpp        firmware (PlatformIO)
-platformio.ini       build configuration
-Sorces/              original Arduino IDE sketch + GPM-8330 user manual (reference)
+src/main.cpp         firmware entry point: UART/SCPI polling, web server, computeMetrics()
+src/display.h/.cpp    TFT + touch UI (TFT_eSPI)
+platformio.ini        build configuration incl. TFT_eSPI pin mapping
+Sorces/                original Arduino IDE sketch + GPM-8330 user manual (reference)
 ```

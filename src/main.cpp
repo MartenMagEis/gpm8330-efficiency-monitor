@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <HardwareSerial.h>
+#include "display.h"
 
 #define RXD2 16
 #define TXD2 17
@@ -19,9 +20,6 @@ WebServer server(80);
 float Power_E1 = 0;
 float Power_E2 = 0;
 float Power_E3 = 0;
-float proz_Power_E1 = 0;
-float proz_Power_E2 = 0;
-float proz_Power_E3 = 0;
 
 unsigned long lastQueryTime = 0;
 unsigned long lastErrorTime = 0;
@@ -44,6 +42,20 @@ String sendCommands[] = {
 };
 
 float* powerVars[] = { &Power_E1, &Power_E2, &Power_E3 };
+
+void setRmtEnabled(bool enabled) {
+  rmtEnabled = enabled;
+  if (enabled) {
+    isInitialized = false;
+  } else {
+    isInitialized = true;
+    awaitingResponse = false;
+  }
+}
+
+void setCascadeMode(bool enabled) {
+  cascadeMode = enabled;
+}
 
 void sendNextCommand() {
   lastSentCommand = sendCommands[uartStep];
@@ -119,12 +131,17 @@ void handleUARTCommunication() {
   }
 }
 
-String generiereJSON() {
+DisplayState computeMetrics() {
+  DisplayState s;
+  s.power1 = Power_E1;
+  s.power2 = Power_E2;
+  s.power3 = Power_E3;
+
   float maxPowerTW = max(Power_E1, max(Power_E2, Power_E3));
   if (maxPowerTW == 0) maxPowerTW = 1;
-  proz_Power_E1 = Power_E1 < 0 ? 0 : (Power_E1 / maxPowerTW) * 100;
-  proz_Power_E2 = Power_E2 < 0 ? 0 : (Power_E2 / maxPowerTW) * 100;
-  proz_Power_E3 = Power_E3 < 0 ? 0 : (Power_E3 / maxPowerTW) * 100;
+  s.percent1 = Power_E1 < 0 ? 0 : (Power_E1 / maxPowerTW) * 100;
+  s.percent2 = Power_E2 < 0 ? 0 : (Power_E2 / maxPowerTW) * 100;
+  s.percent3 = Power_E3 < 0 ? 0 : (Power_E3 / maxPowerTW) * 100;
 
   // Kanäle nach Leistung sortieren: order[0]=Input (größte), order[1]=Zwischenkreis/Stufe, order[2]=Output (kleinste)
   float p[3] = { Power_E1, Power_E2, Power_E3 };
@@ -132,10 +149,12 @@ String generiereJSON() {
   if (p[order[0]] < p[order[1]]) { int t = order[0]; order[0] = order[1]; order[1] = t; }
   if (p[order[1]] < p[order[2]]) { int t = order[1]; order[1] = order[2]; order[2] = t; }
   if (p[order[0]] < p[order[1]]) { int t = order[0]; order[0] = order[1]; order[1] = t; }
+  s.inputChannel = order[0] + 1;
+  s.stageChannel = order[1] + 1;
+  s.outputChannel = order[2] + 1;
 
-  float wirkungsgrad;
-  float stufe1Wirkungsgrad = 0;
-  float stufe2Wirkungsgrad = 0;
+  s.stufe1Wirkungsgrad = 0;
+  s.stufe2Wirkungsgrad = 0;
 
   if (cascadeMode) {
     float pInput = p[order[0]];
@@ -143,34 +162,41 @@ String generiereJSON() {
     float pOutput = p[order[2]];
     float safeInput = pInput == 0 ? 1 : pInput;
     float safeStufe = pStufe == 0 ? 1 : pStufe;
-    stufe1Wirkungsgrad = (pStufe / safeInput) * 100;   // Input -> Zwischenkreis
-    stufe2Wirkungsgrad = (pOutput / safeStufe) * 100;  // Zwischenkreis -> Output
-    wirkungsgrad = (pOutput / safeInput) * 100;         // Gesamtwirkungsgrad Input -> Output
+    s.stufe1Wirkungsgrad = (pStufe / safeInput) * 100;   // Input -> Zwischenkreis
+    s.stufe2Wirkungsgrad = (pOutput / safeStufe) * 100;  // Zwischenkreis -> Output
+    s.wirkungsgrad = (pOutput / safeInput) * 100;         // Gesamtwirkungsgrad Input -> Output
   } else {
-    wirkungsgrad = (proz_Power_E1 + proz_Power_E2 + proz_Power_E3) - 100;
+    s.wirkungsgrad = (s.percent1 + s.percent2 + s.percent3) - 100;
   }
 
+  s.cascadeMode = cascadeMode;
+  s.rmtEnabled = rmtEnabled;
+  s.rs232Error = rs232Error;
+  return s;
+}
+
+String generiereJSON(const DisplayState& s) {
   String json = "{";
-  json += "\"power1\":" + String(Power_E1, 4) + ",";
-  json += "\"power2\":" + String(Power_E2, 4) + ",";
-  json += "\"power3\":" + String(Power_E3, 4) + ",";
-  json += "\"percent1\":" + String(proz_Power_E1, 2) + ",";
-  json += "\"percent2\":" + String(proz_Power_E2, 2) + ",";
-  json += "\"percent3\":" + String(proz_Power_E3, 2) + ",";
-  json += "\"mode\":\"" + String(cascadeMode ? "cascade" : "parallel") + "\",";
-  json += "\"inputChannel\":" + String(order[0] + 1) + ",";
-  json += "\"stageChannel\":" + String(order[1] + 1) + ",";
-  json += "\"outputChannel\":" + String(order[2] + 1) + ",";
-  json += "\"stufe1Wirkungsgrad\":" + String(stufe1Wirkungsgrad, 2) + ",";
-  json += "\"stufe2Wirkungsgrad\":" + String(stufe2Wirkungsgrad, 2) + ",";
-  json += "\"wirkungsgrad\":" + String(wirkungsgrad, 2) + ",";
-  json += "\"error\":" + String(rs232Error ? "true" : "false");
+  json += "\"power1\":" + String(s.power1, 4) + ",";
+  json += "\"power2\":" + String(s.power2, 4) + ",";
+  json += "\"power3\":" + String(s.power3, 4) + ",";
+  json += "\"percent1\":" + String(s.percent1, 2) + ",";
+  json += "\"percent2\":" + String(s.percent2, 2) + ",";
+  json += "\"percent3\":" + String(s.percent3, 2) + ",";
+  json += "\"mode\":\"" + String(s.cascadeMode ? "cascade" : "parallel") + "\",";
+  json += "\"inputChannel\":" + String(s.inputChannel) + ",";
+  json += "\"stageChannel\":" + String(s.stageChannel) + ",";
+  json += "\"outputChannel\":" + String(s.outputChannel) + ",";
+  json += "\"stufe1Wirkungsgrad\":" + String(s.stufe1Wirkungsgrad, 2) + ",";
+  json += "\"stufe2Wirkungsgrad\":" + String(s.stufe2Wirkungsgrad, 2) + ",";
+  json += "\"wirkungsgrad\":" + String(s.wirkungsgrad, 2) + ",";
+  json += "\"error\":" + String(s.rs232Error ? "true" : "false");
   json += "}";
   return json;
 }
 
 void handleData() {
-  server.send(200, "application/json", generiereJSON());
+  server.send(200, "application/json", generiereJSON(computeMetrics()));
 }
 
 String generiereWebseite() {
@@ -242,30 +268,39 @@ void setup() {
   server.begin();
   server.on("/rmt", []() {
     if (server.hasArg("enabled")) {
-      String val = server.arg("enabled");
-      if (val == "1") {
-        rmtEnabled = true;
-        isInitialized = false;
-        Serial.println("🔄 RMT aktiviert – Initialisierung wird zugelassen");
-      } else {
-        rmtEnabled = false;
-        isInitialized = true;
-        awaitingResponse = false;
-        Serial.println("⏸️ RMT deaktiviert – Kommunikation pausiert");
-      }
+      setRmtEnabled(server.arg("enabled") == "1");
+      Serial.println(rmtEnabled ? "🔄 RMT aktiviert – Initialisierung wird zugelassen" : "⏸️ RMT deaktiviert – Kommunikation pausiert");
     }
     server.send(200, "text/plain", "OK");
   });
   server.on("/mode", []() {
     if (server.hasArg("cascade")) {
-      cascadeMode = server.arg("cascade") == "1";
+      setCascadeMode(server.arg("cascade") == "1");
       Serial.println(cascadeMode ? "🔀 Modus: Kaskade (Stufen)" : "🔀 Modus: Parallel (1 Input + 2 Outputs)");
     }
     server.send(200, "text/plain", "OK");
   });
+
+  displayInit();
 }
 
 void loop() {
   handleUARTCommunication();
   server.handleClient();
+
+  static unsigned long lastDisplayUpdate = 0;
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastDisplayUpdate >= 500) {
+    lastDisplayUpdate = currentMillis;
+    displayRender(computeMetrics());
+  }
+
+  DisplayAction action = displayPollTouch();
+  if (action == DISPLAY_ACTION_TOGGLE_RMT) {
+    setRmtEnabled(!rmtEnabled);
+    Serial.println(rmtEnabled ? "🔄 RMT aktiviert (Touch)" : "⏸️ RMT deaktiviert (Touch)");
+  } else if (action == DISPLAY_ACTION_TOGGLE_MODE) {
+    setCascadeMode(!cascadeMode);
+    Serial.println(cascadeMode ? "🔀 Modus: Kaskade (Touch)" : "🔀 Modus: Parallel (Touch)");
+  }
 }
