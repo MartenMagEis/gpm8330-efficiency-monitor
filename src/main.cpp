@@ -260,11 +260,15 @@ String generiereWebseite() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<title>GPM-8330 Monitor</title>";
-  html += "<style>body{font-family:sans-serif;text-align:center;font-size:2em;} .error{color:red;} "
-          "table{margin:auto;border-collapse:collapse;table-layout:fixed;width:100%;max-width:600px;} "
-          "td{padding:8px 4px;border:1px solid #888;width:33%;text-align:center;font-family:monospace;font-size:1.4em;} "
-          "th{padding:4px 2px;border:1px solid #888;width:33%;text-align:center;font-size:0.7em;font-weight:normal;overflow-wrap:break-word;word-break:break-word;} "
-          "button{cursor:pointer;}</style>";
+  html += "<style>body{font-family:sans-serif;text-align:center;font-size:1.1em;margin:12px;} "
+          ".error{color:red;font-size:1.3em;font-weight:bold;min-height:1.3em;} "
+          "h2{font-size:1.3em;margin:14px 0 4px;} "
+          "table{margin:auto;border-collapse:collapse;table-layout:fixed;width:100%;max-width:480px;} "
+          "td{padding:6px 2px;border:1px solid #888;width:33%;text-align:center;font-family:monospace;font-size:1.1em;} "
+          "th{padding:4px 2px;border:1px solid #888;width:33%;text-align:center;font-size:0.65em;font-weight:normal;overflow-wrap:break-word;word-break:break-word;} "
+          ".btnrow{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;max-width:480px;margin:10px auto;} "
+          ".btn{flex:0 0 140px;padding:12px 4px;font-size:0.9em;border:none;border-radius:6px;color:white;background:gray;cursor:pointer;} "
+          ".btn-dark{background:#444;}</style>";
   html += "<script>function roleLabel(ch, d) {";
   html += "if (d.inputChannel === ch) return 'Kanal ' + ch + ' (Input)';";
   html += "if (d.mode === 'cascade' && d.stageChannel === ch) return 'Kanal ' + ch + ' (Zwischenkreis)';";
@@ -283,7 +287,8 @@ String generiereWebseite() {
   html += "document.getElementById('ch2header').innerHTML = roleLabel(2, d);";
   html += "document.getElementById('ch3header').innerHTML = roleLabel(3, d);";
   html += "document.getElementById('wirkungsgradText').innerHTML = d.mode === 'cascade' ? 'Gesamtwirkungsgrad' : 'Wirkungsgrad';";
-  html += "document.getElementById('wirkungsgrad').innerHTML = d.wirkungsgrad < 0 ? \"<span style=\\'color:blue\\'>--- %</span>\" : d.wirkungsgrad.toFixed(2) + ' %';";
+  html += "let noData = d.error || d.wirkungsgrad < 0;";
+  html += "document.getElementById('wirkungsgrad').innerHTML = noData ? \"<span style=\\'color:blue\\'>--- %</span>\" : d.wirkungsgrad.toFixed(2) + ' %';";
   html += "document.getElementById('minmax').innerHTML = d.minWirkungsgrad.toFixed(2) + ' % / ' + d.maxWirkungsgrad.toFixed(2) + ' %';";
   html += "document.getElementById('stufenInfo').style.display = d.mode === 'cascade' ? 'block' : 'none';";
   html += "document.getElementById('stufe1').innerHTML = d.stufe1Wirkungsgrad.toFixed(2) + ' %';";
@@ -293,7 +298,7 @@ String generiereWebseite() {
   html += "let rmtBtn = document.getElementById('rmtBtn');";
   html += "rmtBtn.innerText = currentRmt ? 'RMT OFF' : 'RMT ON'; rmtBtn.style.backgroundColor = currentRmt ? 'green' : 'gray';";
   html += "let modeBtn = document.getElementById('modeBtn');";
-  html += "modeBtn.innerText = currentCascade ? 'Kaskade (Stufen)' : 'Parallel (1 Input + 2 Outputs)'; modeBtn.style.backgroundColor = currentCascade ? 'green' : 'gray';";
+  html += "modeBtn.innerText = currentCascade ? 'Kaskade' : 'Parallel'; modeBtn.style.backgroundColor = currentCascade ? 'green' : 'gray';";
   html += "let logBtn = document.getElementById('logBtn');";
   html += "logBtn.innerText = currentLog ? 'Log Stop' : 'Log Start'; logBtn.style.backgroundColor = currentLog ? 'green' : 'gray';";
   html += "});}";
@@ -315,16 +320,14 @@ String generiereWebseite() {
   html += "<div>Stufe 1 (Input &rarr; Zwischenkreis): <span id='stufe1'>--</span></div>";
   html += "<div>Stufe 2 (Zwischenkreis &rarr; Output): <span id='stufe2'>--</span></div>";
   html += "</div>";
-  html += "<div style='margin-top:20px;'>";
-  html += "<button id='rmtBtn' onclick=\"toggleRMT()\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.5em;\">RMT ON</button>";
+  html += "<div class='btnrow'>";
+  html += "<button id='rmtBtn' class='btn' onclick=\"toggleRMT()\">RMT ON</button>";
+  html += "<button id='modeBtn' class='btn' onclick=\"toggleMode()\">Parallel</button>";
+  html += "<button id='logBtn' class='btn' onclick=\"toggleLog()\">Log Start</button>";
   html += "</div>";
-  html += "<div style='margin-top:10px;'>";
-  html += "<button id='modeBtn' onclick=\"toggleMode()\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.2em;\">Parallel (1 Input + 2 Outputs)</button>";
-  html += "</div>";
-  html += "<div style='margin-top:10px;'>";
-  html += "<button id='logBtn' onclick=\"toggleLog()\" style=\"background-color:gray;color:white;padding:8px 16px;margin:5px;font-size:1.1em;\">Log Start</button>";
-  html += "<a href='/csv'><button style=\"background-color:#444;color:white;padding:8px 16px;margin:5px;font-size:1.1em;\">CSV herunterladen</button></a>";
-  html += "<button onclick=\"clearLog()\" style=\"background-color:#444;color:white;padding:8px 16px;margin:5px;font-size:1.1em;\">Log leeren</button>";
+  html += "<div class='btnrow'>";
+  html += "<a href='/csv' style='text-decoration:none;'><button class='btn btn-dark'>CSV laden</button></a>";
+  html += "<button class='btn btn-dark' onclick=\"clearLog()\">Log leeren</button>";
   html += "</div>";
   html += "</body></html>";
   return html;

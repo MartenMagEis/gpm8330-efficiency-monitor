@@ -27,6 +27,7 @@ static const int TOUCH_IRQ_PIN = 32;
 static bool touchActive = false;
 static unsigned long lastTouchAction = 0;
 static bool showSetupScreen = false;
+static bool lastScreenWasSetup = false;
 
 static String apSsid;
 static String apPassword;
@@ -119,10 +120,6 @@ static void drawSetupScreen(const DisplayState& s) {
 
   drawButton(SETUP_LOG_BTN_X, SETUP_LOG_BTN_Y, SETUP_LOG_BTN_W, SETUP_LOG_BTN_H,
              s.datalogEnabled ? "CSV-Log: AN" : "CSV-Log: AUS", s.datalogEnabled);
-
-  tft.setTextFont(1);
-  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawString("\"SET\" erneut tippen zum Zurueckkehren", 10, 210);
 }
 
 void displayRender(const DisplayState& s) {
@@ -132,7 +129,14 @@ void displayRender(const DisplayState& s) {
 
   if (showSetupScreen) {
     drawSetupScreen(s);
+    lastScreenWasSetup = true;
     return;
+  }
+  if (lastScreenWasSetup) {
+    // Setup-Screen nutzt andere Textpositionen als das Dashboard - dessen inkrementelle
+    // (auf schmale Textfelder begrenzte) Updates wuerden Reste davon stehen lassen.
+    tft.fillRect(0, 22, SCREEN_W, 218, TFT_BLACK);
+    lastScreenWasSetup = false;
   }
 
   float powers[3] = { s.power1, s.power2, s.power3 };
@@ -155,9 +159,13 @@ void displayRender(const DisplayState& s) {
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
   tft.drawString(s.cascadeMode ? "Gesamtwirkungsgrad" : "Wirkungsgrad", SCREEN_W / 2, 94);
 
+  // "--- %" bei fehlender/ungueltiger Verbindung statt eines irrefuehrenden "0.00 %"
+  // (im Kaskade-Modus ergibt die Formel bei Power=0 rechnerisch 0, nicht negativ, wuerde
+  // also ohne die explizite rs232Error-Abfrage faelschlich gruen als "guter" Wert erscheinen).
+  bool noData = s.rs232Error || s.wirkungsgrad < 0;
   tft.setTextFont(4);
-  tft.setTextColor(s.wirkungsgrad < 0 ? TFT_BLUE : TFT_GREEN, TFT_BLACK);
-  tft.drawString(s.wirkungsgrad < 0 ? "--- %" : String(s.wirkungsgrad, 2) + " %", SCREEN_W / 2, 112);
+  tft.setTextColor(noData ? TFT_BLUE : TFT_GREEN, TFT_BLACK);
+  tft.drawString(noData ? "--- %" : String(s.wirkungsgrad, 2) + " %", SCREEN_W / 2, 112);
   tft.setTextFont(2);
 
   tft.fillRect(0, STUFEN_Y, SCREEN_W, STUFEN_H, TFT_BLACK);
