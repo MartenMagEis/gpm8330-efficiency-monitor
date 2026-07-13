@@ -28,6 +28,7 @@ unsigned long lastErrorTime = 0;
 bool rs232Error = true;
 bool isInitialized = false;
 bool rmtEnabled = false;
+bool cascadeMode = false; // false = 1 Input + 2 Outputs, true = kaskadierte Messung (Input -> Zwischenkreis -> Output)
 int uartStep = 0;
 
 String lastSentCommand = "";
@@ -125,7 +126,29 @@ String generiereJSON() {
   proz_Power_E2 = Power_E2 < 0 ? 0 : (Power_E2 / maxPowerTW) * 100;
   proz_Power_E3 = Power_E3 < 0 ? 0 : (Power_E3 / maxPowerTW) * 100;
 
-  float wirkungsgrad = (proz_Power_E1 + proz_Power_E2 + proz_Power_E3) - 100;
+  // Kanäle nach Leistung sortieren: order[0]=Input (größte), order[1]=Zwischenkreis/Stufe, order[2]=Output (kleinste)
+  float p[3] = { Power_E1, Power_E2, Power_E3 };
+  int order[3] = { 0, 1, 2 };
+  if (p[order[0]] < p[order[1]]) { int t = order[0]; order[0] = order[1]; order[1] = t; }
+  if (p[order[1]] < p[order[2]]) { int t = order[1]; order[1] = order[2]; order[2] = t; }
+  if (p[order[0]] < p[order[1]]) { int t = order[0]; order[0] = order[1]; order[1] = t; }
+
+  float wirkungsgrad;
+  float stufe1Wirkungsgrad = 0;
+  float stufe2Wirkungsgrad = 0;
+
+  if (cascadeMode) {
+    float pInput = p[order[0]];
+    float pStufe = p[order[1]];
+    float pOutput = p[order[2]];
+    float safeInput = pInput == 0 ? 1 : pInput;
+    float safeStufe = pStufe == 0 ? 1 : pStufe;
+    stufe1Wirkungsgrad = (pStufe / safeInput) * 100;   // Input -> Zwischenkreis
+    stufe2Wirkungsgrad = (pOutput / safeStufe) * 100;  // Zwischenkreis -> Output
+    wirkungsgrad = (pOutput / safeInput) * 100;         // Gesamtwirkungsgrad Input -> Output
+  } else {
+    wirkungsgrad = (proz_Power_E1 + proz_Power_E2 + proz_Power_E3) - 100;
+  }
 
   String json = "{";
   json += "\"power1\":" + String(Power_E1, 4) + ",";
@@ -134,6 +157,12 @@ String generiereJSON() {
   json += "\"percent1\":" + String(proz_Power_E1, 2) + ",";
   json += "\"percent2\":" + String(proz_Power_E2, 2) + ",";
   json += "\"percent3\":" + String(proz_Power_E3, 2) + ",";
+  json += "\"mode\":\"" + String(cascadeMode ? "cascade" : "parallel") + "\",";
+  json += "\"inputChannel\":" + String(order[0] + 1) + ",";
+  json += "\"stageChannel\":" + String(order[1] + 1) + ",";
+  json += "\"outputChannel\":" + String(order[2] + 1) + ",";
+  json += "\"stufe1Wirkungsgrad\":" + String(stufe1Wirkungsgrad, 2) + ",";
+  json += "\"stufe2Wirkungsgrad\":" + String(stufe2Wirkungsgrad, 2) + ",";
   json += "\"wirkungsgrad\":" + String(wirkungsgrad, 2) + ",";
   json += "\"error\":" + String(rs232Error ? "true" : "false");
   json += "}";
@@ -148,7 +177,12 @@ String generiereWebseite() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<title>GPM-8330 Monitor</title>";
   html += "<style>body{font-family:sans-serif;text-align:center;font-size:2em;} .error{color:red;} table{margin:auto;border-collapse:collapse;table-layout:fixed;width:80%;}td,th{padding:10px;border:1px solid #888;width:33%;text-align:center;font-family:monospace;font-size:1.6em;} </style>";
-  html += "<script>function aktualisieren() {";
+  html += "<script>function roleLabel(ch, d) {";
+  html += "if (d.inputChannel === ch) return 'Kanal ' + ch + ' (Input)';";
+  html += "if (d.mode === 'cascade' && d.stageChannel === ch) return 'Kanal ' + ch + ' (Zwischenkreis)';";
+  html += "if (d.mode === 'cascade' && d.outputChannel === ch) return 'Kanal ' + ch + ' (Output)';";
+  html += "return 'Kanal ' + ch;}";
+  html += "function aktualisieren() {";
   html += "fetch('/data').then(r => r.json()).then(d => {";
   html += "document.getElementById('p1').innerHTML = d.power1.toFixed(4).padStart(7, ' ').replace(/^ +/, '&nbsp;') + ' W';";
   html += "document.getElementById('p2').innerHTML = d.power2.toFixed(4).padStart(7, ' ').replace(/^ +/, '&nbsp;') + ' W';";
@@ -156,22 +190,38 @@ String generiereWebseite() {
   html += "document.getElementById('percent1').innerHTML = d.percent1.toFixed(2).padStart(6, ' ').replace(/^ +/, '&nbsp;') + ' %';";
   html += "document.getElementById('percent2').innerHTML = d.percent2.toFixed(2).padStart(6, ' ').replace(/^ +/, '&nbsp;') + ' %';";
   html += "document.getElementById('percent3').innerHTML = d.percent3.toFixed(2).padStart(6, ' ').replace(/^ +/, '&nbsp;') + ' %';";
+  html += "document.getElementById('ch1header').innerHTML = roleLabel(1, d);";
+  html += "document.getElementById('ch2header').innerHTML = roleLabel(2, d);";
+  html += "document.getElementById('ch3header').innerHTML = roleLabel(3, d);";
+  html += "document.getElementById('wirkungsgradText').innerHTML = d.mode === 'cascade' ? 'Gesamtwirkungsgrad' : 'Wirkungsgrad';";
   html += "document.getElementById('wirkungsgrad').innerHTML = d.wirkungsgrad < 0 ? \"<span style=\\'color:blue\\'>--- %</span>\" : d.wirkungsgrad.toFixed(2) + ' %';";
+  html += "document.getElementById('stufenInfo').style.display = d.mode === 'cascade' ? 'block' : 'none';";
+  html += "document.getElementById('stufe1').innerHTML = d.stufe1Wirkungsgrad.toFixed(2) + ' %';";
+  html += "document.getElementById('stufe2').innerHTML = d.stufe2Wirkungsgrad.toFixed(2) + ' %';";
   html += "if(d.error){ document.getElementById('error').innerHTML = 'RS232 Fehler'; } else { document.getElementById('error').innerHTML = ''; }";
   html += "});}";
   html += "setInterval(aktualisieren, 500); window.onload = aktualisieren;";
   html += "</script>";
   html += "</head><body><div id='error' class='error'></div>";
   html += "<h2>Wirkleistung (Watt) je Kanal</h2>";
-  html += "<table><tr><th>Kanal 1</th><th>Kanal 2</th><th>Kanal 3</th></tr>";
+  html += "<table><tr><th id='ch1header'>Kanal 1</th><th id='ch2header'>Kanal 2</th><th id='ch3header'>Kanal 3</th></tr>";
   html += "<tr><td id='p1'>Lade...</td><td id='p2'>Lade...</td><td id='p3'>Lade...</td></tr>";
   html += "<tr><td id='percent1'>Lade...</td><td id='percent2'>Lade...</td><td id='percent3'>Lade...</td></tr></table>";
-  html += "<h2>Wirkungsgrad: <span id='wirkungsgrad'>Lade...</span></h2>";
+  html += "<h2><span id='wirkungsgradText'>Wirkungsgrad</span>: <span id='wirkungsgrad'>Lade...</span></h2>";
+  html += "<div id='stufenInfo' style='display:none;font-size:0.6em;margin-top:-10px;'>";
+  html += "<div>Stufe 1 (Input &rarr; Zwischenkreis): <span id='stufe1'>--</span></div>";
+  html += "<div>Stufe 2 (Zwischenkreis &rarr; Output): <span id='stufe2'>--</span></div>";
+  html += "</div>";
   html += "<div style='margin-top:20px;'>";
   html += "<button id='rmtOnBtn' onclick=\"setRMT(true)\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.5em;\">RMT ON</button>";
   html += "<button id='rmtOffBtn' onclick=\"setRMT(false)\" style=\"background-color:green;color:white;padding:10px 20px;margin:5px;font-size:1.5em;\">RMT OFF</button>";
   html += "</div>";
-  html += "<script>let rmtEnabled = false;function setRMT(state) {rmtEnabled = state;document.getElementById('rmtOnBtn').style.backgroundColor = state ? 'green' : 'gray';document.getElementById('rmtOffBtn').style.backgroundColor = state ? 'gray' : 'green';fetch('/rmt?enabled=' + (state ? '1' : '0'));}</script>";
+  html += "<div style='margin-top:10px;'>";
+  html += "<button id='modeParallelBtn' onclick=\"setMode(false)\" style=\"background-color:green;color:white;padding:10px 20px;margin:5px;font-size:1.2em;\">Parallel (1 Input + 2 Outputs)</button>";
+  html += "<button id='modeCascadeBtn' onclick=\"setMode(true)\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.2em;\">Kaskade (Stufen)</button>";
+  html += "</div>";
+  html += "<script>let rmtEnabled = false;function setRMT(state) {rmtEnabled = state;document.getElementById('rmtOnBtn').style.backgroundColor = state ? 'green' : 'gray';document.getElementById('rmtOffBtn').style.backgroundColor = state ? 'gray' : 'green';fetch('/rmt?enabled=' + (state ? '1' : '0'));}";
+  html += "function setMode(state) {document.getElementById('modeCascadeBtn').style.backgroundColor = state ? 'green' : 'gray';document.getElementById('modeParallelBtn').style.backgroundColor = state ? 'gray' : 'green';fetch('/mode?cascade=' + (state ? '1' : '0'));}</script>";
   html += "</body></html>";
   return html;
 }
@@ -203,6 +253,13 @@ void setup() {
         awaitingResponse = false;
         Serial.println("⏸️ RMT deaktiviert – Kommunikation pausiert");
       }
+    }
+    server.send(200, "text/plain", "OK");
+  });
+  server.on("/mode", []() {
+    if (server.hasArg("cascade")) {
+      cascadeMode = server.arg("cascade") == "1";
+      Serial.println(cascadeMode ? "🔀 Modus: Kaskade (Stufen)" : "🔀 Modus: Parallel (1 Input + 2 Outputs)");
     }
     server.send(200, "text/plain", "OK");
   });

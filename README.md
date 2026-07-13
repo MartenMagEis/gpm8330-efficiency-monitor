@@ -20,22 +20,32 @@ efficiency figure between them.
 ### Channel wiring / efficiency calculation
 
 Channel 1/2/3 map directly to `Power_E1/E2/E3` — there is no fixed "channel 2 = input" rule in
-the firmware. Instead, `generiereJSON()` treats **whichever channel currently reads the highest
-power as the input (100% reference)** and sums the other two channels' percentages:
+the firmware. Instead, `generiereJSON()` always sorts the three channel powers and treats
+**whichever channel currently reads the highest power as the input**, regardless of which
+physical channel it's wired to. Two measurement modes use that ranking differently, switchable
+at runtime via the **Parallel / Kaskade** buttons on the dashboard (or `GET /mode?cascade=0|1`):
 
-```
-wirkungsgrad (%) = percent1 + percent2 + percent3 − 100
-```
+- **Parallel mode** (default) — one AC input feeding a supply with two DC outputs, wired in the
+  meter's 3V3A mode (three independent single-phase measurements, see manual appendix "Wiring
+  diagram"):
 
-This is correct for the common bench setup — **one AC input feeding a supply with two DC
-outputs**, wired in the meter's 3V3A mode (three independent single-phase measurements, see
-manual appendix "Wiring diagram") — regardless of which physical channel the input happens to be
-plugged into, as long as the input channel really is the highest-power one.
+  ```
+  wirkungsgrad (%) = percent1 + percent2 + percent3 − 100
+  ```
 
-**It is not correct for a cascaded/3-stage measurement** (e.g. 230 V AC → DC link → output),
-because summing three series stages' percentages this way double-counts the power path. If you
-need that topology, the efficiency formula needs to change to a per-stage ratio
-(`stage2/stage1`, `stage3/stage2`) instead of the current "1 input + 2 outputs" sum.
+- **Kaskade (cascade) mode** — a 3-stage series measurement (e.g. 230 V AC → DC link → output).
+  The highest-power channel is the **input**, the middle one the **Zwischenkreis/Stufe 1**, the
+  lowest the **output**, and the response includes both per-stage and overall efficiency:
+
+  ```
+  stufe1Wirkungsgrad (%) = P(Zwischenkreis) / P(Input)  × 100   // stage 1
+  stufe2Wirkungsgrad (%) = P(Output)        / P(Zwischenkreis) × 100   // stage 2
+  wirkungsgrad (%)        = P(Output)        / P(Input)  × 100   // overall, input → output
+  ```
+
+`/data` also reports `mode`, `inputChannel`, `stageChannel` and `outputChannel` (1-based) so the
+UI can label which physical channel currently plays which role — that labeling adapts live if you
+swap which channel carries the highest power.
 
 ## Hardware
 
@@ -62,6 +72,8 @@ Adjust the `board` in `platformio.ini` if your ESP32 module differs from a gener
 1. Power the ESP32; connect to the `ESP32-GPM8330` WiFi AP (password `12345678`).
 2. Open `http://192.168.4.1/` in a browser.
 3. Press **RMT ON** to start polling the meter; **RMT OFF** pauses communication.
+4. Choose **Parallel** (1 input + 2 outputs) or **Kaskade** (3-stage series measurement)
+   depending on how the meter is wired.
 
 ## Repo layout
 
