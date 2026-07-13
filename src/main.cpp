@@ -6,7 +6,9 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <HardwareSerial.h>
+#include <ArduinoOTA.h>
 #include "display.h"
+#include "datalog.h"
 
 #define RXD2 16
 #define TXD2 17
@@ -27,7 +29,25 @@ bool rs232Error = true;
 bool isInitialized = false;
 bool rmtEnabled = false;
 bool cascadeMode = false; // false = 1 Input + 2 Outputs, true = kaskadierte Messung (Input -> Zwischenkreis -> Output)
+bool skipPreset = false;  // uebergangsweise: PRESET-Set-Befehl beim Init weglassen (Testhypothese Remote-Lock)
 int uartStep = 0;
+
+float minWirkungsgrad = 0;
+float maxWirkungsgrad = 0;
+bool minMaxInitialized = false;
+bool showMinMax = false;
+
+// Einfache Browser-Zeit-Synchronisierung: der ESP32 hat im reinen AP-Modus keinen
+// Internetzugang fuer NTP und keine batteriegepufferte RTC. Stattdessen schickt die
+// Weboberflaeche beim Laden Date.now() an /settime; wir merken uns den Offset zu
+// millis() und schaetzen die Unix-Zeit fuer CSV-Zeitstempel darüber.
+int64_t timeSyncOffsetMs = 0;
+bool timeSynced = false;
+
+uint64_t currentEpochMs() {
+  if (!timeSynced) return millis();
+  return (uint64_t)((int64_t)millis() + timeSyncOffsetMs);
+}
 
 String lastSentCommand = "";
 unsigned long commandSentTime = 0;
@@ -43,10 +63,15 @@ String sendCommands[] = {
 
 float* powerVars[] = { &Power_E1, &Power_E2, &Power_E3 };
 
+void resetMinMax() {
+  minMaxInitialized = false;
+}
+
 void setRmtEnabled(bool enabled) {
   rmtEnabled = enabled;
   if (enabled) {
     isInitialized = false;
+    resetMinMax();
   } else {
     isInitialized = true;
     awaitingResponse = false;
@@ -55,6 +80,14 @@ void setRmtEnabled(bool enabled) {
 
 void setCascadeMode(bool enabled) {
   cascadeMode = enabled;
+  resetMinMax();
+}
+
+void setSkipPreset(bool enabled) {
+  skipPreset = enabled;
+  if (rmtEnabled) {
+    isInitialized = false;
+  }
 }
 
 void sendNextCommand() {
@@ -82,9 +115,13 @@ void handleUARTCommunication() {
         String response = rs232.readStringUntil('\n');
         Serial.println("✅ Init: Antwort empfangen -> " + response);
         delay(100);
-        rs232.print(":NUMERIC:NORMAL:PRESET 4\n");
-        delay(100);
-        Serial.println("⚙️ Initialisierungsbefehl gesendet: PRESET 4");
+        if (!skipPreset) {
+          rs232.print(":NUMERIC:NORMAL:PRESET 4\n");
+          delay(100);
+          Serial.println("⚙️ Initialisierungsbefehl gesendet: PRESET 4");
+        } else {
+          Serial.println("⏭️ PRESET 4 uebersprungen (PRE-Toggle aktiv)");
+        }
         isInitialized = true;
         uartStep = 0;
         awaitingResponse = false;
@@ -169,9 +206,25 @@ DisplayState computeMetrics() {
     s.wirkungsgrad = (s.percent1 + s.percent2 + s.percent3) - 100;
   }
 
+  if (!rs232Error) {
+    if (!minMaxInitialized) {
+      minWirkungsgrad = s.wirkungsgrad;
+      maxWirkungsgrad = s.wirkungsgrad;
+      minMaxInitialized = true;
+    } else {
+      minWirkungsgrad = min(minWirkungsgrad, s.wirkungsgrad);
+      maxWirkungsgrad = max(maxWirkungsgrad, s.wirkungsgrad);
+    }
+  }
+  s.minWirkungsgrad = minWirkungsgrad;
+  s.maxWirkungsgrad = maxWirkungsgrad;
+
   s.cascadeMode = cascadeMode;
   s.rmtEnabled = rmtEnabled;
   s.rs232Error = rs232Error;
+  s.skipPreset = skipPreset;
+  s.showMinMax = showMinMax;
+  s.datalogEnabled = datalogIsEnabled();
   return s;
 }
 
@@ -190,6 +243,10 @@ String generiereJSON(const DisplayState& s) {
   json += "\"stufe1Wirkungsgrad\":" + String(s.stufe1Wirkungsgrad, 2) + ",";
   json += "\"stufe2Wirkungsgrad\":" + String(s.stufe2Wirkungsgrad, 2) + ",";
   json += "\"wirkungsgrad\":" + String(s.wirkungsgrad, 2) + ",";
+  json += "\"minWirkungsgrad\":" + String(s.minWirkungsgrad, 2) + ",";
+  json += "\"maxWirkungsgrad\":" + String(s.maxWirkungsgrad, 2) + ",";
+  json += "\"rmtEnabled\":" + String(s.rmtEnabled ? "true" : "false") + ",";
+  json += "\"datalogEnabled\":" + String(s.datalogEnabled ? "true" : "false") + ",";
   json += "\"error\":" + String(s.rs232Error ? "true" : "false");
   json += "}";
   return json;
@@ -201,13 +258,19 @@ void handleData() {
 
 String generiereWebseite() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<title>GPM-8330 Monitor</title>";
-  html += "<style>body{font-family:sans-serif;text-align:center;font-size:2em;} .error{color:red;} table{margin:auto;border-collapse:collapse;table-layout:fixed;width:80%;}td,th{padding:10px;border:1px solid #888;width:33%;text-align:center;font-family:monospace;font-size:1.6em;} </style>";
+  html += "<style>body{font-family:sans-serif;text-align:center;font-size:2em;} .error{color:red;} "
+          "table{margin:auto;border-collapse:collapse;table-layout:fixed;width:100%;max-width:600px;} "
+          "td{padding:8px 4px;border:1px solid #888;width:33%;text-align:center;font-family:monospace;font-size:1.4em;} "
+          "th{padding:4px 2px;border:1px solid #888;width:33%;text-align:center;font-size:0.7em;font-weight:normal;overflow-wrap:break-word;word-break:break-word;} "
+          "button{cursor:pointer;}</style>";
   html += "<script>function roleLabel(ch, d) {";
   html += "if (d.inputChannel === ch) return 'Kanal ' + ch + ' (Input)';";
   html += "if (d.mode === 'cascade' && d.stageChannel === ch) return 'Kanal ' + ch + ' (Zwischenkreis)';";
   html += "if (d.mode === 'cascade' && d.outputChannel === ch) return 'Kanal ' + ch + ' (Output)';";
   html += "return 'Kanal ' + ch;}";
+  html += "let currentRmt = false, currentCascade = false, currentLog = false;";
   html += "function aktualisieren() {";
   html += "fetch('/data').then(r => r.json()).then(d => {";
   html += "document.getElementById('p1').innerHTML = d.power1.toFixed(4).padStart(7, ' ').replace(/^ +/, '&nbsp;') + ' W';";
@@ -221,12 +284,25 @@ String generiereWebseite() {
   html += "document.getElementById('ch3header').innerHTML = roleLabel(3, d);";
   html += "document.getElementById('wirkungsgradText').innerHTML = d.mode === 'cascade' ? 'Gesamtwirkungsgrad' : 'Wirkungsgrad';";
   html += "document.getElementById('wirkungsgrad').innerHTML = d.wirkungsgrad < 0 ? \"<span style=\\'color:blue\\'>--- %</span>\" : d.wirkungsgrad.toFixed(2) + ' %';";
+  html += "document.getElementById('minmax').innerHTML = d.minWirkungsgrad.toFixed(2) + ' % / ' + d.maxWirkungsgrad.toFixed(2) + ' %';";
   html += "document.getElementById('stufenInfo').style.display = d.mode === 'cascade' ? 'block' : 'none';";
   html += "document.getElementById('stufe1').innerHTML = d.stufe1Wirkungsgrad.toFixed(2) + ' %';";
   html += "document.getElementById('stufe2').innerHTML = d.stufe2Wirkungsgrad.toFixed(2) + ' %';";
   html += "if(d.error){ document.getElementById('error').innerHTML = 'RS232 Fehler'; } else { document.getElementById('error').innerHTML = ''; }";
+  html += "currentRmt = d.rmtEnabled; currentCascade = (d.mode === 'cascade'); currentLog = d.datalogEnabled;";
+  html += "let rmtBtn = document.getElementById('rmtBtn');";
+  html += "rmtBtn.innerText = currentRmt ? 'RMT OFF' : 'RMT ON'; rmtBtn.style.backgroundColor = currentRmt ? 'green' : 'gray';";
+  html += "let modeBtn = document.getElementById('modeBtn');";
+  html += "modeBtn.innerText = currentCascade ? 'Kaskade (Stufen)' : 'Parallel (1 Input + 2 Outputs)'; modeBtn.style.backgroundColor = currentCascade ? 'green' : 'gray';";
+  html += "let logBtn = document.getElementById('logBtn');";
+  html += "logBtn.innerText = currentLog ? 'Log Stop' : 'Log Start'; logBtn.style.backgroundColor = currentLog ? 'green' : 'gray';";
   html += "});}";
-  html += "setInterval(aktualisieren, 500); window.onload = aktualisieren;";
+  html += "function toggleRMT() { fetch('/rmt?enabled=' + (currentRmt ? '0' : '1')); }";
+  html += "function toggleMode() { fetch('/mode?cascade=' + (currentCascade ? '0' : '1')); }";
+  html += "function toggleLog() { fetch('/log?enabled=' + (currentLog ? '0' : '1')); }";
+  html += "function clearLog() { fetch('/csv/clear'); }";
+  html += "setInterval(aktualisieren, 500);";
+  html += "window.onload = function() { fetch('/settime?t=' + Date.now()); aktualisieren(); };";
   html += "</script>";
   html += "</head><body><div id='error' class='error'></div>";
   html += "<h2>Wirkleistung (Watt) je Kanal</h2>";
@@ -234,20 +310,22 @@ String generiereWebseite() {
   html += "<tr><td id='p1'>Lade...</td><td id='p2'>Lade...</td><td id='p3'>Lade...</td></tr>";
   html += "<tr><td id='percent1'>Lade...</td><td id='percent2'>Lade...</td><td id='percent3'>Lade...</td></tr></table>";
   html += "<h2><span id='wirkungsgradText'>Wirkungsgrad</span>: <span id='wirkungsgrad'>Lade...</span></h2>";
+  html += "<div style='font-size:0.5em;margin-top:-10px;'>Min/Max: <span id='minmax'>--</span></div>";
   html += "<div id='stufenInfo' style='display:none;font-size:0.6em;margin-top:-10px;'>";
   html += "<div>Stufe 1 (Input &rarr; Zwischenkreis): <span id='stufe1'>--</span></div>";
   html += "<div>Stufe 2 (Zwischenkreis &rarr; Output): <span id='stufe2'>--</span></div>";
   html += "</div>";
   html += "<div style='margin-top:20px;'>";
-  html += "<button id='rmtOnBtn' onclick=\"setRMT(true)\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.5em;\">RMT ON</button>";
-  html += "<button id='rmtOffBtn' onclick=\"setRMT(false)\" style=\"background-color:green;color:white;padding:10px 20px;margin:5px;font-size:1.5em;\">RMT OFF</button>";
+  html += "<button id='rmtBtn' onclick=\"toggleRMT()\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.5em;\">RMT ON</button>";
   html += "</div>";
   html += "<div style='margin-top:10px;'>";
-  html += "<button id='modeParallelBtn' onclick=\"setMode(false)\" style=\"background-color:green;color:white;padding:10px 20px;margin:5px;font-size:1.2em;\">Parallel (1 Input + 2 Outputs)</button>";
-  html += "<button id='modeCascadeBtn' onclick=\"setMode(true)\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.2em;\">Kaskade (Stufen)</button>";
+  html += "<button id='modeBtn' onclick=\"toggleMode()\" style=\"background-color:gray;color:white;padding:10px 20px;margin:5px;font-size:1.2em;\">Parallel (1 Input + 2 Outputs)</button>";
   html += "</div>";
-  html += "<script>let rmtEnabled = false;function setRMT(state) {rmtEnabled = state;document.getElementById('rmtOnBtn').style.backgroundColor = state ? 'green' : 'gray';document.getElementById('rmtOffBtn').style.backgroundColor = state ? 'gray' : 'green';fetch('/rmt?enabled=' + (state ? '1' : '0'));}";
-  html += "function setMode(state) {document.getElementById('modeCascadeBtn').style.backgroundColor = state ? 'green' : 'gray';document.getElementById('modeParallelBtn').style.backgroundColor = state ? 'gray' : 'green';fetch('/mode?cascade=' + (state ? '1' : '0'));}</script>";
+  html += "<div style='margin-top:10px;'>";
+  html += "<button id='logBtn' onclick=\"toggleLog()\" style=\"background-color:gray;color:white;padding:8px 16px;margin:5px;font-size:1.1em;\">Log Start</button>";
+  html += "<a href='/csv'><button style=\"background-color:#444;color:white;padding:8px 16px;margin:5px;font-size:1.1em;\">CSV herunterladen</button></a>";
+  html += "<button onclick=\"clearLog()\" style=\"background-color:#444;color:white;padding:8px 16px;margin:5px;font-size:1.1em;\">Log leeren</button>";
+  html += "</div>";
   html += "</body></html>";
   return html;
 }
@@ -262,7 +340,14 @@ void setup() {
   rs232.begin(115200, SERIAL_8N1, RXD2, TXD2);
   Serial.println("UART2 gestartet: TXD2=17, RXD2=16");
 
+  datalogInit();
+
   WiFi.softAP(ssid, password);
+
+  ArduinoOTA.setHostname("gpm8330-monitor");
+  ArduinoOTA.setPassword(password);
+  ArduinoOTA.begin();
+
   server.on("/", handleRoot);
   server.on("/data", handleData);
   server.begin();
@@ -280,19 +365,47 @@ void setup() {
     }
     server.send(200, "text/plain", "OK");
   });
+  server.on("/log", []() {
+    if (server.hasArg("enabled")) {
+      datalogSetEnabled(server.arg("enabled") == "1");
+      Serial.println(datalogIsEnabled() ? "🗒️ CSV-Log gestartet" : "🗒️ CSV-Log gestoppt");
+    }
+    server.send(200, "text/plain", "OK");
+  });
+  server.on("/csv", []() {
+    datalogWriteCsv(server);
+  });
+  server.on("/csv/clear", []() {
+    datalogClear();
+    server.send(200, "text/plain", "OK");
+  });
+  server.on("/settime", []() {
+    if (server.hasArg("t")) {
+      int64_t epochMs = strtoll(server.arg("t").c_str(), nullptr, 10);
+      timeSyncOffsetMs = epochMs - (int64_t)millis();
+      timeSynced = true;
+    }
+    server.send(200, "text/plain", "OK");
+  });
 
-  displayInit();
+  displayInit(ssid, password, WiFi.softAPIP().toString());
 }
 
 void loop() {
   handleUARTCommunication();
   server.handleClient();
+  ArduinoOTA.handle();
 
   static unsigned long lastDisplayUpdate = 0;
+  static unsigned long lastLogSample = 0;
   unsigned long currentMillis = millis();
   if (currentMillis - lastDisplayUpdate >= 500) {
     lastDisplayUpdate = currentMillis;
     displayRender(computeMetrics());
+  }
+  if (currentMillis - lastLogSample >= 1000) {
+    lastLogSample = currentMillis;
+    datalogSample(computeMetrics(), currentEpochMs());
   }
 
   DisplayAction action = displayPollTouch();
@@ -302,5 +415,13 @@ void loop() {
   } else if (action == DISPLAY_ACTION_TOGGLE_MODE) {
     setCascadeMode(!cascadeMode);
     Serial.println(cascadeMode ? "🔀 Modus: Kaskade (Touch)" : "🔀 Modus: Parallel (Touch)");
+  } else if (action == DISPLAY_ACTION_TOGGLE_PRESET) {
+    setSkipPreset(!skipPreset);
+    Serial.println(skipPreset ? "⏭️ PRESET-Skip aktiviert (Touch)" : "⏭️ PRESET-Skip deaktiviert (Touch)");
+  } else if (action == DISPLAY_ACTION_TOGGLE_MINMAX) {
+    showMinMax = !showMinMax;
+  } else if (action == DISPLAY_ACTION_TOGGLE_LOG) {
+    datalogSetEnabled(!datalogIsEnabled());
+    Serial.println(datalogIsEnabled() ? "🗒️ CSV-Log gestartet (Touch)" : "🗒️ CSV-Log gestoppt (Touch)");
   }
 }
