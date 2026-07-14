@@ -342,10 +342,20 @@ String generiereWebseite() {
   html += "function toggleMode() { fetch('/mode?cascade=' + (currentCascade ? '0' : '1')); }";
   html += "function toggleLog() { fetch('/log?enabled=' + (currentLog ? '0' : '1')); }";
   html += "function clearLog() { fetch('/csv/clear'); }";
+  html += "let wifiScanTries = 0;";
   html += "function scanWifi() {";
   html += "document.getElementById('wifiList').innerHTML = 'Suche...';";
+  html += "wifiScanTries = 0;";
+  html += "pollWifiScan();";
+  html += "}";
+  html += "function pollWifiScan() {";
   html += "fetch('/wifiscan').then(r => r.json()).then(res => {";
-  html += "if (!res.ok) { document.getElementById('wifiList').innerHTML = 'Scan fehlgeschlagen, bitte erneut versuchen'; return; }";
+  html += "if (res.status === 'running') {";
+  html += "wifiScanTries++;";
+  html += "if (wifiScanTries > 20) { document.getElementById('wifiList').innerHTML = 'Scan dauert ungewoehnlich lange, bitte erneut versuchen'; return; }";
+  html += "setTimeout(pollWifiScan, 500);";
+  html += "return;";
+  html += "}";
   html += "let html = '';";
   html += "res.networks.forEach(n => { html += '<div style=\"margin:4px 0;\"><button class=\"btn btn-dark\" style=\"flex:0 0 260px;\" onclick=\"connectWifi(\\'' + n.ssid.replace(/'/g, \"\\\\'\") + '\\')\">' + n.ssid + ' (' + n.rssi + ' dBm)</button></div>'; });";
   html += "document.getElementById('wifiList').innerHTML = html || 'Keine Netzwerke gefunden';";
@@ -446,6 +456,9 @@ void setup() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false); // Modem-Sleep ist im AP+STA-Kombibetrieb ein bekannter Grund fuer
                         // unzuverlaessige/aussetzende WiFi.scanNetworks()-Ergebnisse.
+  WiFi.setAutoReconnect(true); // Sicherheitsnetz: ein Scan kann eine bestehende STA-Verbindung
+                               // kurz stoeren (ESP32 hat nur eine Funkeinheit) - soll sich von
+                               // selbst wieder verbinden statt dauerhaft getrennt zu bleiben.
   WiFi.softAP(ssid, password);
   connectSavedWifi();
 
@@ -502,18 +515,25 @@ void setup() {
     }
     server.send(200, "text/plain", "OK");
   });
+  // Asynchroner Scan statt eines blockierenden WiFi.scanNetworks(): das gibt dem
+  // ESP32-WiFi-Task mehr Spielraum, die bestehende STA-Verbindung waehrenddessen zu
+  // pflegen, statt sie durch einen harten synchronen (und im Fehlerfall sogar
+  // wiederholten) Scan zusaetzlich zu stoeren. Der Client pollt diesen Endpoint,
+  // bis "status" nicht mehr "running" ist.
   server.on("/wifiscan", []() {
-    int n = WiFi.scanNetworks();
-    // WIFI_SCAN_FAILED(-2)/WIFI_SCAN_RUNNING(-1): auf dem ESP32 gelegentlich, wenn
-    // gleichzeitig ein AP laeuft und/oder STA gerade (mit)verbindet - einmal
-    // kurz erneut versuchen, bevor wir dem Client einen Fehler melden.
-    if (n < 0) {
-      delay(300);
-      n = WiFi.scanNetworks();
+    int result = WiFi.scanComplete();
+    if (result == WIFI_SCAN_FAILED) {
+      WiFi.scanNetworks(true);
+      server.send(200, "application/json", "{\"status\":\"running\"}");
+      return;
     }
-    Serial.printf("📶 WiFi-Scan: %d Ergebnis(se)\n", n);
-    String json = "{\"ok\":" + String(n >= 0 ? "true" : "false") + ",\"networks\":[";
-    for (int i = 0; i < n; i++) {
+    if (result == WIFI_SCAN_RUNNING) {
+      server.send(200, "application/json", "{\"status\":\"running\"}");
+      return;
+    }
+    Serial.printf("📶 WiFi-Scan abgeschlossen: %d Ergebnis(se)\n", result);
+    String json = "{\"status\":\"done\",\"networks\":[";
+    for (int i = 0; i < result; i++) {
       if (i > 0) json += ",";
       json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
     }

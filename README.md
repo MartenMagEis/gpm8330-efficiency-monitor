@@ -125,13 +125,16 @@ Credentials are stored in NVS (`Preferences`, namespace `wifi`) and reconnected 
 every boot. Connection status (SSID + IP) shows on the web dashboard and on the touch Setup screen.
 
 **Netzwerke suchen** (`GET /wifiscan`) is an optional convenience to list nearby SSIDs instead of
-typing one, but the ESP32 only has a single radio: a scan has to leave the AP's channel to sweep
-all channels, which briefly stops the device's own AP from beaconing — that's why it can flicker
-in/out of a phone's WiFi list during a scan, and why scanning while the AP is up is inherently
-unreliable (this is a hardware limitation, not something fixable in software). `/wifiscan` retries
-once on failure and `WiFi.setSleep(false)` is set at boot as a mitigation, but manual SSID entry is
-the reliable path if scanning keeps failing. The Serial Monitor (`pio device monitor`) logs the raw
-scan result count for every `/wifiscan` call if you want to dig further.
+typing one. The ESP32 only has a single radio, so any scan has to briefly leave the AP's/STA's
+channel to sweep all channels — that's an unavoidable hardware limitation, not something fixable
+in software, and can momentarily interrupt the device's own AP beaconing and/or an active STA
+connection. To keep that disruption as small as possible, scanning is asynchronous
+(`WiFi.scanNetworks(true)` + `WiFi.scanComplete()`, polled by the client every 500 ms via
+`GET /wifiscan` until it reports `"status":"done"`) instead of one long blocking call, and
+`WiFi.setSleep(false)` + `WiFi.setAutoReconnect(true)` are set at boot so a scan-induced STA
+disconnect recovers on its own within a few seconds. Manual SSID entry remains the reliable
+fallback if scanning misbehaves. The Serial Monitor (`pio device monitor`) logs the network count
+for every completed scan if you want to dig further.
 
 ### SD card logging hardware
 
