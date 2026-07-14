@@ -8,6 +8,7 @@
 #include <HardwareSerial.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
+#include <sys/time.h>
 #include "display.h"
 #include "datalog.h"
 
@@ -72,6 +73,27 @@ void startWifiConnect(const String& newSsid, const String& newPassword) {
   wifiPrefs.end();
   Serial.println("📶 Verbinde mit WLAN: " + newSsid);
   WiFi.begin(newSsid.c_str(), newPassword.c_str());
+}
+
+// Praezise STA-Diagnose ueber Serial statt nur "verbunden/nicht verbunden": Reason-Codes
+// von ARDUINO_EVENT_WIFI_STA_DISCONNECTED entsprechen wifi_err_reason_t aus dem IDF, u.a.
+// 2=AUTH_EXPIRE, 15=4WAY_HANDSHAKE_TIMEOUT (meist falsches Passwort), 201=NO_AP_FOUND
+// (SSID nicht gefunden/getippt - z.B. 5GHz-only-Netz, das der ESP32 nicht sehen kann),
+// 205=AUTH_FAIL.
+void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      Serial.println("📶 STA: WLAN-Handshake ok, warte auf IP...");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.println("📶 STA: IP erhalten -> " + WiFi.localIP().toString());
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.printf("📶 STA: getrennt, reason=%d\n", info.wifi_sta_disconnected.reason);
+      break;
+    default:
+      break;
+  }
 }
 
 String lastSentCommand = "";
@@ -377,8 +399,7 @@ String generiereWebseite() {
   html += "function loadSdFiles() {";
   html += "document.getElementById('sdFileList').innerHTML = 'Lade...';";
   html += "fetch('/sdfiles').then(r => r.json()).then(files => {";
-  html += "files.sort((a, b) => b.name.localeCompare(a.name));";
-  html += "let html = '';";
+  html += "let html = '';"; // Server liefert bereits nach echtem Schreibzeitpunkt sortiert (neueste zuerst)
   html += "files.forEach(f => { html += '<div><a href=\"/sdfile?name=' + encodeURIComponent(f.name) + '\">' + f.name + '</a> (' + (f.size/1024).toFixed(1) + ' KB)</div>'; });";
   html += "document.getElementById('sdFileList').innerHTML = html || 'Keine Dateien';";
   html += "});}";
@@ -453,6 +474,7 @@ void setup() {
 
   // AP bleibt immer aktiv; zusaetzlich optional einem bestehenden WLAN beitreten
   // (z.B. fuers Buero-/Labornetz, OTA-Updates ohne den ESP32-eigenen AP).
+  WiFi.onEvent(onWifiEvent);
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false); // Modem-Sleep ist im AP+STA-Kombibetrieb ein bekannter Grund fuer
                         // unzuverlaessige/aussetzende WiFi.scanNetworks()-Ergebnisse.
@@ -512,6 +534,13 @@ void setup() {
       int64_t epochMs = strtoll(server.arg("t").c_str(), nullptr, 10);
       timeSyncOffsetMs = epochMs - (int64_t)millis();
       timeSynced = true;
+      // Stellt zusaetzlich die interne Systemuhr - sonst haetten SD-Datei-Zeitstempel
+      // (fuer die Sortierung der SD-Dateiliste) keinen sinnvollen Wert, da FAT beim
+      // Schreiben die ESP-IDF-Systemzeit nutzt, nicht unseren eigenen millis()-Offset.
+      struct timeval tv;
+      tv.tv_sec = (time_t)(epochMs / 1000);
+      tv.tv_usec = (suseconds_t)((epochMs % 1000) * 1000);
+      settimeofday(&tv, nullptr);
     }
     server.send(200, "text/plain", "OK");
   });

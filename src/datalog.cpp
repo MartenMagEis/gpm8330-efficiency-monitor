@@ -2,6 +2,8 @@
 #include <new>
 #include <SPI.h>
 #include <SD.h>
+#include <vector>
+#include <algorithm>
 
 // Ringpuffer: 1 Sample/s * 3600 = 1h Historie. Erweiterung um weitere Messgroessen
 // (z.B. U/I/S/Q je Kanal): Feld hier ergaenzen, csvRow()/csvHeader() entsprechend erweitern.
@@ -131,22 +133,41 @@ void datalogWriteCsv(WebServer& server) {
   }
 }
 
+struct SdFileEntry {
+  String name;
+  size_t size;
+  time_t mtime;
+};
+
+// Sortiert nach dem tatsaechlichen Schreibzeitpunkt der Datei (FAT-Zeitstempel),
+// nicht nach dem Dateinamen - der enthaelt zwar meist die Startzeit als Unix-Millisekunden,
+// faellt aber auf boot-relative millis() zurueck, wenn beim Log-Start noch keine Zeit
+// synchronisiert war (siehe currentEpochMs()). Ein alphabetischer Namensvergleich wuerde
+// solche Alt-Dateien dann falsch einsortieren. getLastWrite() liefert nur dann sinnvolle
+// Werte, wenn settimeofday() vorher ueber /settime aufgerufen wurde (siehe main.cpp).
 String datalogSdFileListJson() {
   if (!sdAvailable) return "[]";
   File root = SD.open("/");
   if (!root) return "[]";
-  String json = "[";
-  bool first = true;
+  std::vector<SdFileEntry> entries;
   File f = root.openNextFile();
   while (f) {
     if (!f.isDirectory()) {
-      if (!first) json += ",";
-      json += "{\"name\":\"" + String(f.name()) + "\",\"size\":" + String(f.size()) + "}";
-      first = false;
+      entries.push_back({ String(f.name()), (size_t)f.size(), f.getLastWrite() });
     }
     f = root.openNextFile();
   }
   root.close();
+
+  std::sort(entries.begin(), entries.end(), [](const SdFileEntry& a, const SdFileEntry& b) {
+    return a.mtime > b.mtime;
+  });
+
+  String json = "[";
+  for (size_t i = 0; i < entries.size(); i++) {
+    if (i > 0) json += ",";
+    json += "{\"name\":\"" + entries[i].name + "\",\"size\":" + String(entries[i].size) + "}";
+  }
   return json + "]";
 }
 

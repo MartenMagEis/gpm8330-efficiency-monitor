@@ -110,8 +110,12 @@ adding more logged values later (e.g. per-channel U/I/S/Q) is a localized change
 no battery-backed RTC, so it can't know the wall-clock time on its own by default. Instead, the web
 dashboard sends the browser's `Date.now()` to `GET /settime?t=<epoch_ms>` once on page load; the
 firmware stores the offset to its own `millis()` and uses that to estimate Unix time for each log
-row (`currentEpochMs()` in `src/main.cpp`). Load the dashboard at least once per boot before/while
-logging to get real timestamps — otherwise rows fall back to boot-relative milliseconds. No
+row (`currentEpochMs()` in `src/main.cpp`), and also calls `settimeofday()` so the ESP32's system
+clock is correct too — that's what timestamps new SD files with a real write time (`FILE_WRITE`
+via FAT), which `/sdfiles` sorts by (`getLastWrite()`, newest first) instead of parsing the
+filename, so a mixed set of old boot-relative-named and new epoch-named files still sorts
+correctly. Load the dashboard at least once per boot before/while logging to get real timestamps
+and correct SD sort order — otherwise rows/filenames fall back to boot-relative milliseconds. No
 periodic re-sync; expect a few seconds of drift over a very long unattended session.
 
 ### WiFi (AP always on + optional STA)
@@ -158,7 +162,10 @@ firmware with `ArduinoOTA` support is already on the device via a first USB flas
 `esp32dev_ota` environment's `upload_port` is hardcoded to the AP's fixed `192.168.4.1` since
 that's always predictable; to flash over the STA network instead, override it on the command line,
 e.g. `pio run -t upload -e esp32dev_ota --upload-port <device's STA IP>` (see the touch Setup
-screen or web dashboard for that IP).
+screen or web dashboard for that IP). In one test this failed at "Waiting for device..." over the
+STA network (auth succeeded, then no callback) while USB worked fine right after — untested
+whether that's a firewall/multi-NIC issue on the flashing PC or something ESP32-side; USB is the
+reliable fallback if OTA hangs like that.
 
 ## Hardware
 
