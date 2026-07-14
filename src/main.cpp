@@ -353,7 +353,12 @@ String generiereWebseite() {
   html += "function connectWifi(ssid) {";
   html += "let pass = document.getElementById('wifiPass').value;";
   html += "fetch('/wificonnect?ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pass));";
-  html += "document.getElementById('wifiList').innerHTML = 'Verbinde mit ' + ssid + ' ... (Status oben bei WLAN nach ein paar Sekunden pruefen)';";
+  html += "document.getElementById('wifiStatus').innerHTML = 'Verbinde mit ' + ssid + ' ... (Status hier nach ein paar Sekunden pruefen)';";
+  html += "}";
+  html += "function connectWifiManual() {";
+  html += "let ssid = document.getElementById('wifiSsid').value;";
+  html += "if (!ssid) { return; }";
+  html += "connectWifi(ssid);";
   html += "}";
   html += "function toggleWifiPassVisibility() {";
   html += "let el = document.getElementById('wifiPass');";
@@ -394,16 +399,22 @@ String generiereWebseite() {
 
   html += "<h2>WLAN</h2>";
   html += "<div id='wifiStatus' style='font-size:0.8em;'>--</div>";
-  html += "<div style='font-size:0.75em;color:#666;max-width:480px;margin:4px auto;'>"
-          "1. Netzwerke suchen &nbsp;&middot;&nbsp; 2. Passwort eintragen &nbsp;&middot;&nbsp; "
-          "3. gewuenschtes Netzwerk in der Liste antippen zum Verbinden</div>";
   html += "<div class='btnrow'>";
-  html += "<button class='btn btn-dark' onclick=\"scanWifi()\">Netzwerke suchen</button>";
+  html += "<input id='wifiSsid' type='text' placeholder='SSID' style='flex:0 0 200px;padding:8px;'>";
   html += "</div>";
   html += "<div class='btnrow'>";
   html += "<input id='wifiPass' type='password' placeholder='Passwort' style='flex:0 0 200px;padding:8px;'>";
   html += "<label style='font-size:0.8em;display:flex;align-items:center;gap:4px;'>"
           "<input type='checkbox' onclick='toggleWifiPassVisibility()'> anzeigen</label>";
+  html += "</div>";
+  html += "<div class='btnrow'>";
+  html += "<button class='btn' onclick=\"connectWifiManual()\">Verbinden</button>";
+  html += "</div>";
+  html += "<div style='font-size:0.7em;color:#666;max-width:480px;margin:8px auto 2px;'>"
+          "Der ESP32 hat nur eine Funkeinheit: ein Scan blendet den eigenen AP kurz aus und kann "
+          "fehlschlagen. Wenn ihr die SSID kennt, oben direkt eintragen statt zu scannen.</div>";
+  html += "<div class='btnrow'>";
+  html += "<button class='btn btn-dark' onclick=\"scanWifi()\">Netzwerke suchen (optional)</button>";
   html += "</div>";
   html += "<div id='wifiList' style='font-size:0.8em;'></div>";
 

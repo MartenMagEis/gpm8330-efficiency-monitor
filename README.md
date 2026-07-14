@@ -119,18 +119,19 @@ periodic re-sync; expect a few seconds of drift over a very long unattended sess
 The ESP32 always runs its own `ESP32-GPM8330` access point (`WIFI_AP_STA` mode) — that never turns
 off. It can additionally join an existing WiFi network (e.g. a lab/office network) at the same
 time, mainly so OTA updates and the dashboard are reachable without being on the device's own AP.
-From the web dashboard's **WLAN** section: **Netzwerke suchen** scans and lists nearby SSIDs
-(`GET /wifiscan`, a few seconds — this blocks the main loop briefly, so RS-232 polling/display
-pause for the duration of a scan); enter a password (checkbox to reveal it while typing), tap a
-network in the list, and it connects (`GET /wificonnect?ssid=...&password=...`). Credentials are
-stored in NVS (`Preferences`, namespace `wifi`) and reconnected automatically on every boot.
-Connection status (SSID + IP) shows on the web dashboard and on the touch Setup screen.
+From the web dashboard's **WLAN** section: type the SSID and password directly and hit
+**Verbinden** (checkbox to reveal the password while typing) — this is the recommended path.
+Credentials are stored in NVS (`Preferences`, namespace `wifi`) and reconnected automatically on
+every boot. Connection status (SSID + IP) shows on the web dashboard and on the touch Setup screen.
 
-`WiFi.scanNetworks()` on the ESP32 is known to be unreliable while a SoftAP + STA connection are
-both active at once, particularly with WiFi modem sleep enabled — `/wifiscan` retries once on a
-failed scan and `WiFi.setSleep(false)` is set at boot as a mitigation, but this hasn't been
-stress-tested across many scan/connect cycles. If scanning stops working, check the Serial Monitor
-(`pio device monitor`), which logs the raw scan result count for every `/wifiscan` call.
+**Netzwerke suchen** (`GET /wifiscan`) is an optional convenience to list nearby SSIDs instead of
+typing one, but the ESP32 only has a single radio: a scan has to leave the AP's channel to sweep
+all channels, which briefly stops the device's own AP from beaconing — that's why it can flicker
+in/out of a phone's WiFi list during a scan, and why scanning while the AP is up is inherently
+unreliable (this is a hardware limitation, not something fixable in software). `/wifiscan` retries
+once on failure and `WiFi.setSleep(false)` is set at boot as a mitigation, but manual SSID entry is
+the reliable path if scanning keeps failing. The Serial Monitor (`pio device monitor`) logs the raw
+scan result count for every `/wifiscan` call if you want to dig further.
 
 ### SD card logging hardware
 
