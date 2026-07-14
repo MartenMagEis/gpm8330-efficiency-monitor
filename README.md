@@ -87,18 +87,20 @@ also toggleable from the touch Setup screen) — logging is independent of `RMT`
 briefly turning RMT off to use the meter's front panel doesn't lose an in-progress recording.
 Two logging backends run simultaneously while enabled:
 
-- **RAM ring buffer** (always active): samples once per second into a 1800-entry buffer (~30 min
-  of history; oldest entries roll off after that, nothing is written to flash — allocated on the
-  heap at boot via `new(std::nothrow)`, so if it can't fit it logs a warning and disables the RAM
-  log instead of crashing; see `datalogInit()` in `src/datalog.cpp`). Download the recent history
-  via **CSV herunterladen** (`GET /csv`) and clear it via **Log leeren** (`GET /csv/clear`) — this
-  only clears the RAM view, not any SD file (see below).
-- **SD card** (if a card is present): each **Log Start** opens a new file
-  `/gpm8330_<epoch_ms>.csv` and appends + flushes a row per sample for as long as logging stays
-  on, unbounded by RAM — meant for long unattended test runs. **Log leeren** does not touch SD
-  files (deleting a permanent recording by accident would be worse than a full card). Browse/
-  download recorded files via the **SD-Dateien anzeigen** button on the dashboard (`GET /sdfiles`
-  for the JSON listing, `GET /sdfile?name=...` to download one).
+- **SD card** (if a card is present — the primary path when one is inserted): each **Log Start**
+  opens a new file `/gpm8330_<epoch_ms>.csv` and appends + flushes a row per sample for as long as
+  logging stays on, unbounded by RAM — meant for long unattended test runs. Browse/download
+  recorded files via the **SD-Dateien anzeigen** list on the dashboard (auto-loaded on page load,
+  newest first; `GET /sdfiles` for the raw JSON listing, `GET /sdfile?name=...` to download one).
+- **RAM ring buffer** (fallback for when no SD card is present): samples once per second into a
+  1800-entry buffer (~30 min of history; oldest entries roll off after that, nothing is written to
+  flash — allocated on the heap at boot via `new(std::nothrow)`, so if it can't fit it logs a
+  warning and disables the RAM log instead of crashing; see `datalogInit()` in `src/datalog.cpp`).
+  The **CSV herunterladen**/**Log leeren** (`GET /csv` / `GET /csv/clear`) buttons only appear on
+  the dashboard when `sdAvailable` is false — with an SD card inserted they're hidden, since the SD
+  file list already covers that need with no 30-minute cap. `Log leeren` only ever clears this RAM
+  view, never an SD file (deleting a permanent recording by accident would be worse than a full
+  card).
 
 Both backends write identical rows (columns `t_epoch_ms,power1_w,power2_w,power3_w,
 wirkungsgrad_pct,mode`); the sample struct and CSV formatting live together in `src/datalog.cpp` so
@@ -119,10 +121,16 @@ off. It can additionally join an existing WiFi network (e.g. a lab/office networ
 time, mainly so OTA updates and the dashboard are reachable without being on the device's own AP.
 From the web dashboard's **WLAN** section: **Netzwerke suchen** scans and lists nearby SSIDs
 (`GET /wifiscan`, a few seconds — this blocks the main loop briefly, so RS-232 polling/display
-pause for the duration of a scan); tap a network, enter its password, and it connects
-(`GET /wificonnect?ssid=...&password=...`). Credentials are stored in NVS (`Preferences`,
-namespace `wifi`) and reconnected automatically on every boot. Connection status (SSID + IP) shows
-on the web dashboard and on the touch Setup screen.
+pause for the duration of a scan); enter a password (checkbox to reveal it while typing), tap a
+network in the list, and it connects (`GET /wificonnect?ssid=...&password=...`). Credentials are
+stored in NVS (`Preferences`, namespace `wifi`) and reconnected automatically on every boot.
+Connection status (SSID + IP) shows on the web dashboard and on the touch Setup screen.
+
+`WiFi.scanNetworks()` on the ESP32 is known to be unreliable while a SoftAP + STA connection are
+both active at once, particularly with WiFi modem sleep enabled — `/wifiscan` retries once on a
+failed scan and `WiFi.setSleep(false)` is set at boot as a mitigation, but this hasn't been
+stress-tested across many scan/connect cycles. If scanning stops working, check the Serial Monitor
+(`pio device monitor`), which logs the raw scan result count for every `/wifiscan` call.
 
 ### SD card logging hardware
 
@@ -222,6 +230,11 @@ Three small chips in the title bar toggle secondary, less-frequently-used settin
 
 WiFi network scanning/joining is web-only by design (see "WiFi" above) — no touch UI for that,
 typing a password on a resistive touchscreen keyboard would be painful.
+
+The row normally used for the red "RS232 Fehler" banner doubles as a logging-in-progress reminder:
+if CSV logging is on and there's no RS-232 error, it turns orange and shows "● LOG LAEUFT" so an
+active recording isn't easy to forget about on the bench; an RS-232 error takes priority (red) but
+still appends the log reminder to the same line if both apply at once.
 
 ## Repo layout
 

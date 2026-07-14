@@ -336,6 +336,7 @@ String generiereWebseite() {
   html += "logBtn.innerText = currentLog ? 'Log Stop' : 'Log Start'; logBtn.style.backgroundColor = currentLog ? 'green' : 'gray';";
   html += "document.getElementById('wifiStatus').innerHTML = d.staConnected ? ('Verbunden mit ' + d.staSsid + ' (' + d.staIp + ')') : 'Nicht mit einem WLAN verbunden (eigener AP laeuft weiter)';";
   html += "document.getElementById('sdStatus').innerHTML = d.sdAvailable ? 'SD-Karte bereit' : 'Keine SD-Karte erkannt';";
+  html += "document.getElementById('ramLogRow').style.display = d.sdAvailable ? 'none' : 'flex';";
   html += "});}";
   html += "function toggleRMT() { fetch('/rmt?enabled=' + (currentRmt ? '0' : '1')); }";
   html += "function toggleMode() { fetch('/mode?cascade=' + (currentCascade ? '0' : '1')); }";
@@ -343,25 +344,31 @@ String generiereWebseite() {
   html += "function clearLog() { fetch('/csv/clear'); }";
   html += "function scanWifi() {";
   html += "document.getElementById('wifiList').innerHTML = 'Suche...';";
-  html += "fetch('/wifiscan').then(r => r.json()).then(nets => {";
+  html += "fetch('/wifiscan').then(r => r.json()).then(res => {";
+  html += "if (!res.ok) { document.getElementById('wifiList').innerHTML = 'Scan fehlgeschlagen, bitte erneut versuchen'; return; }";
   html += "let html = '';";
-  html += "nets.forEach(n => { html += '<div style=\"margin:4px 0;\"><button class=\"btn btn-dark\" style=\"flex:0 0 260px;\" onclick=\"connectWifi(\\'' + n.ssid.replace(/'/g, \"\\\\'\") + '\\')\">' + n.ssid + ' (' + n.rssi + ' dBm)</button></div>'; });";
+  html += "res.networks.forEach(n => { html += '<div style=\"margin:4px 0;\"><button class=\"btn btn-dark\" style=\"flex:0 0 260px;\" onclick=\"connectWifi(\\'' + n.ssid.replace(/'/g, \"\\\\'\") + '\\')\">' + n.ssid + ' (' + n.rssi + ' dBm)</button></div>'; });";
   html += "document.getElementById('wifiList').innerHTML = html || 'Keine Netzwerke gefunden';";
   html += "});}";
   html += "function connectWifi(ssid) {";
   html += "let pass = document.getElementById('wifiPass').value;";
   html += "fetch('/wificonnect?ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pass));";
-  html += "document.getElementById('wifiList').innerHTML = 'Verbinde mit ' + ssid + ' ...';";
+  html += "document.getElementById('wifiList').innerHTML = 'Verbinde mit ' + ssid + ' ... (Status oben bei WLAN nach ein paar Sekunden pruefen)';";
+  html += "}";
+  html += "function toggleWifiPassVisibility() {";
+  html += "let el = document.getElementById('wifiPass');";
+  html += "el.type = el.type === 'password' ? 'text' : 'password';";
   html += "}";
   html += "function loadSdFiles() {";
   html += "document.getElementById('sdFileList').innerHTML = 'Lade...';";
   html += "fetch('/sdfiles').then(r => r.json()).then(files => {";
+  html += "files.sort((a, b) => b.name.localeCompare(a.name));";
   html += "let html = '';";
   html += "files.forEach(f => { html += '<div><a href=\"/sdfile?name=' + encodeURIComponent(f.name) + '\">' + f.name + '</a> (' + (f.size/1024).toFixed(1) + ' KB)</div>'; });";
   html += "document.getElementById('sdFileList').innerHTML = html || 'Keine Dateien';";
   html += "});}";
   html += "setInterval(aktualisieren, 500);";
-  html += "window.onload = function() { fetch('/settime?t=' + Date.now()); aktualisieren(); };";
+  html += "window.onload = function() { fetch('/settime?t=' + Date.now()); aktualisieren(); loadSdFiles(); };";
   html += "</script>";
   html += "</head><body><div id='error' class='error'></div>";
   html += "<h2>Wirkleistung (Watt) je Kanal</h2>";
@@ -379,16 +386,24 @@ String generiereWebseite() {
   html += "<button id='modeBtn' class='btn' onclick=\"toggleMode()\">Parallel</button>";
   html += "<button id='logBtn' class='btn' onclick=\"toggleLog()\">Log Start</button>";
   html += "</div>";
-  html += "<div class='btnrow'>";
+  html += "<div id='ramLogRow' class='btnrow' style='display:none;'>";
   html += "<a href='/csv' style='text-decoration:none;'><button class='btn btn-dark'>CSV laden</button></a>";
   html += "<button class='btn btn-dark' onclick=\"clearLog()\">Log leeren</button>";
   html += "</div>";
+  html += "<div style='font-size:0.7em;color:#666;'>(RAM-Kurzverlauf, nur relevant ohne SD-Karte)</div>";
 
   html += "<h2>WLAN</h2>";
   html += "<div id='wifiStatus' style='font-size:0.8em;'>--</div>";
+  html += "<div style='font-size:0.75em;color:#666;max-width:480px;margin:4px auto;'>"
+          "1. Netzwerke suchen &nbsp;&middot;&nbsp; 2. Passwort eintragen &nbsp;&middot;&nbsp; "
+          "3. gewuenschtes Netzwerk in der Liste antippen zum Verbinden</div>";
+  html += "<div class='btnrow'>";
+  html += "<button class='btn btn-dark' onclick=\"scanWifi()\">Netzwerke suchen</button>";
+  html += "</div>";
   html += "<div class='btnrow'>";
   html += "<input id='wifiPass' type='password' placeholder='Passwort' style='flex:0 0 200px;padding:8px;'>";
-  html += "<button class='btn btn-dark' onclick=\"scanWifi()\">Netzwerke suchen</button>";
+  html += "<label style='font-size:0.8em;display:flex;align-items:center;gap:4px;'>"
+          "<input type='checkbox' onclick='toggleWifiPassVisibility()'> anzeigen</label>";
   html += "</div>";
   html += "<div id='wifiList' style='font-size:0.8em;'></div>";
 
@@ -418,6 +433,8 @@ void setup() {
   // AP bleibt immer aktiv; zusaetzlich optional einem bestehenden WLAN beitreten
   // (z.B. fuers Buero-/Labornetz, OTA-Updates ohne den ESP32-eigenen AP).
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false); // Modem-Sleep ist im AP+STA-Kombibetrieb ein bekannter Grund fuer
+                        // unzuverlaessige/aussetzende WiFi.scanNetworks()-Ergebnisse.
   WiFi.softAP(ssid, password);
   connectSavedWifi();
 
@@ -476,12 +493,20 @@ void setup() {
   });
   server.on("/wifiscan", []() {
     int n = WiFi.scanNetworks();
-    String json = "[";
+    // WIFI_SCAN_FAILED(-2)/WIFI_SCAN_RUNNING(-1): auf dem ESP32 gelegentlich, wenn
+    // gleichzeitig ein AP laeuft und/oder STA gerade (mit)verbindet - einmal
+    // kurz erneut versuchen, bevor wir dem Client einen Fehler melden.
+    if (n < 0) {
+      delay(300);
+      n = WiFi.scanNetworks();
+    }
+    Serial.printf("📶 WiFi-Scan: %d Ergebnis(se)\n", n);
+    String json = "{\"ok\":" + String(n >= 0 ? "true" : "false") + ",\"networks\":[";
     for (int i = 0; i < n; i++) {
       if (i > 0) json += ",";
       json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
     }
-    json += "]";
+    json += "]}";
     WiFi.scanDelete();
     server.send(200, "application/json", json);
   });

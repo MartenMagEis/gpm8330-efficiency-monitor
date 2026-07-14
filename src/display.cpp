@@ -191,10 +191,19 @@ void displayRender(const DisplayState& s) {
     tft.drawString(stufe2, SCREEN_W / 2, STUFEN_Y + 24);
   }
 
-  tft.fillRect(0, ERROR_Y, SCREEN_W, ERROR_H, s.rs232Error ? TFT_RED : TFT_BLACK);
-  if (s.rs232Error) {
-    tft.setTextColor(TFT_WHITE, TFT_RED);
-    tft.drawString("RS232 Fehler", SCREEN_W / 2, ERROR_Y + 2);
+  // Fehler hat Vorrang (rot), sonst zeigt dieselbe Zeile bei laufendem Log eine
+  // Erinnerung (orange) - damit man ein laufendes Logging auf dem Hauptbildschirm
+  // nicht uebersieht, ohne fuer den Regelfall (kein Fehler, kein Log) Platz zu belegen.
+  uint32_t bannerColor = s.rs232Error ? TFT_RED : (s.datalogEnabled ? TFT_ORANGE : TFT_BLACK);
+  tft.fillRect(0, ERROR_Y, SCREEN_W, ERROR_H, bannerColor);
+  if (s.rs232Error || s.datalogEnabled) {
+    String bannerText = s.rs232Error ? "RS232 Fehler" : "";
+    if (s.datalogEnabled) {
+      bannerText += (bannerText.length() ? "   " : "");
+      bannerText += "● LOG LAEUFT";
+    }
+    tft.setTextColor(TFT_WHITE, bannerColor);
+    tft.drawString(bannerText, SCREEN_W / 2, ERROR_Y + 2);
   }
 
   tft.setTextPadding(0);
