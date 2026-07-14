@@ -7,6 +7,9 @@ static Preferences prefs;
 
 static const int SCREEN_W = 320;
 
+// Landscape, um 180 Grad gedreht gegenueber der urspruenglichen Einbaulage (rotation 1).
+static const uint8_t DISPLAY_ROTATION = 3;
+
 static const int COL_X[3] = { 8, 116, 224 };
 static const int COL_W = 100;
 
@@ -20,7 +23,7 @@ static const int CHIP_SETUP_X = 270;
 static const int STUFEN_Y = 130, STUFEN_H = 40;
 static const int ERROR_Y = 172, ERROR_H = 18;
 
-static const int SETUP_LOG_BTN_X = 60, SETUP_LOG_BTN_Y = 150, SETUP_LOG_BTN_W = 200, SETUP_LOG_BTN_H = 40;
+static const int SETUP_LOG_BTN_X = 60, SETUP_LOG_BTN_Y = 170, SETUP_LOG_BTN_W = 200, SETUP_LOG_BTN_H = 40;
 
 static const int TOUCH_IRQ_PIN = 32;
 
@@ -39,7 +42,11 @@ static bool pointInRect(int x, int y, int rx, int ry, int rw, int rh) {
 
 static void calibrateTouch() {
   uint16_t calData[5];
-  if (prefs.isKey("tcal")) {
+  // Kalibrierdaten sind rotationsabhaengig - bei einer Rotationsaenderung im Code
+  // (z.B. Display 180 Grad gedreht) muss neu kalibriert werden, sonst waeren
+  // Touch-Koordinaten und Anzeige gegeneinander verdreht.
+  uint8_t storedRotation = prefs.getUChar("tcalRot", 0xFF);
+  if (prefs.isKey("tcal") && storedRotation == DISPLAY_ROTATION) {
     prefs.getBytes("tcal", calData, sizeof(calData));
     tft.setTouch(calData);
     return;
@@ -51,6 +58,7 @@ static void calibrateTouch() {
   tft.drawString("Touch-Kalibrierung: Ecken beruehren", 10, 10);
   tft.calibrateTouch(calData, TFT_WHITE, TFT_RED, 15);
   prefs.putBytes("tcal", calData, sizeof(calData));
+  prefs.putUChar("tcalRot", DISPLAY_ROTATION);
   tft.setTouch(calData);
 }
 
@@ -87,7 +95,7 @@ void displayInit(const String& ssid, const String& password, const String& ip) {
   apIp = ip;
 
   tft.init();
-  tft.setRotation(1);
+  tft.setRotation(DISPLAY_ROTATION);
   prefs.begin("gpm8330", false);
   calibrateTouch();
 
@@ -111,12 +119,12 @@ static void drawSetupScreen(const DisplayState& s) {
 
   tft.setTextFont(1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("SSID: " + apSsid, 10, 62);
-  tft.drawString("Passwort: " + apPassword, 10, 80);
-  // Modus ist aktuell statisch "Access Point" - es gibt noch keinen STA-Modus,
-  // siehe Roadmap-Abschnitt in der README.
-  tft.drawString("Modus: Access Point", 10, 98);
-  tft.drawString("IP: " + apIp, 10, 116);
+  tft.drawString("AP-SSID: " + apSsid, 10, 62);
+  tft.drawString("AP-Passwort: " + apPassword, 10, 80);
+  tft.drawString("AP-IP: " + apIp, 10, 98);
+  tft.drawString(s.staConnected ? "WLAN: " + s.staSsid + " (" + s.staIp + ")" : "WLAN: nicht verbunden",
+                 10, 116);
+  tft.drawString(s.sdAvailable ? "SD-Karte: bereit" : "SD-Karte: nicht gefunden", 10, 134);
 
   drawButton(SETUP_LOG_BTN_X, SETUP_LOG_BTN_Y, SETUP_LOG_BTN_W, SETUP_LOG_BTN_H,
              s.datalogEnabled ? "Log Stop" : "Log Start", s.datalogEnabled);
@@ -240,7 +248,7 @@ DisplayAction displayPollTouch() {
 
 void displayTouchDiagnostics() {
   tft.init();
-  tft.setRotation(1);
+  tft.setRotation(DISPLAY_ROTATION);
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextFont(2);

@@ -71,45 +71,82 @@ behavior). Not yet verified against real hardware.
 
 ### Min/Max tracking
 
-Tracks the min/max of `wirkungsgrad` since the last reconnect (`RMT` turned back on) or mode
-switch (the two modes define `wirkungsgrad` differently, so the range resets on `Parallel`/
-`Kaskade` toggle too). Always available via `/data` (`minWirkungsgrad`/`maxWirkungsgrad`) and shown
-on the web dashboard. On the touch display it's off by default — toggle with the top-left "M/M"
-chip; when shown, it reuses the row normally used for Stufe 1/2 info in cascade mode, so it's only
-visible in **Parallel** mode (cascade mode's stage readout takes priority in that row).
+Tracks the min/max of `wirkungsgrad` since the last reconnect (`RMT` turned back on), mode switch
+(the two modes define `wirkungsgrad` differently, so the range resets on `Parallel`/`Kaskade`
+toggle too), or since the Min/Max row was last turned on (activating the display starts a fresh
+observation window rather than showing a stale range from whenever tracking happened to last
+reset). Always available via `/data` (`minWirkungsgrad`/`maxWirkungsgrad`) and shown on the web
+dashboard. On the touch display it's off by default — toggle with the top-left "M/M" chip; when
+shown, it reuses the row normally used for Stufe 1/2 info in cascade mode and takes priority over
+it while active.
 
 ### CSV logging
 
-Manual start/stop from the web dashboard (**Log Start**/**Log Stop**, or `GET /log?enabled=0|1`) —
-logging is independent of `RMT`/mode toggles, so briefly turning RMT off to use the meter's front
-panel doesn't lose an in-progress recording. Samples once per second into a 1800-entry RAM ring
-buffer (~30 min of history; oldest entries roll off after that, nothing is written to flash — the
-buffer is allocated on the heap at boot via `new(std::nothrow)`, so if it can't fit it logs a
-warning and disables logging instead of crashing; see `datalogInit()` in `src/datalog.cpp`).
-Download via **CSV herunterladen** (`GET /csv`, columns
-`t_epoch_ms,power1_w,power2_w,power3_w,wirkungsgrad_pct,mode`) and clear via **Log leeren**
-(`GET /csv/clear`). The sample struct and CSV formatting live together in `src/datalog.cpp` so
-adding more logged values later (e.g. per-channel U/I/S/Q) is a localized change.
+Manual start/stop from the web dashboard (**Log Start**/**Log Stop**, or `GET /log?enabled=0|1`,
+also toggleable from the touch Setup screen) — logging is independent of `RMT`/mode toggles, so
+briefly turning RMT off to use the meter's front panel doesn't lose an in-progress recording.
+Two logging backends run simultaneously while enabled:
 
-**Timestamps:** the ESP32 has no internet access in AP-only mode (so no NTP) and no
-battery-backed RTC, so it can't know the wall-clock time on its own. Instead, the web dashboard
-sends the browser's `Date.now()` to `GET /settime?t=<epoch_ms>` once on page load; the firmware
-stores the offset to its own `millis()` and uses that to estimate Unix time for each log row
-(`currentEpochMs()` in `src/main.cpp`). Load the dashboard at least once per boot before/while
+- **RAM ring buffer** (always active): samples once per second into a 1800-entry buffer (~30 min
+  of history; oldest entries roll off after that, nothing is written to flash — allocated on the
+  heap at boot via `new(std::nothrow)`, so if it can't fit it logs a warning and disables the RAM
+  log instead of crashing; see `datalogInit()` in `src/datalog.cpp`). Download the recent history
+  via **CSV herunterladen** (`GET /csv`) and clear it via **Log leeren** (`GET /csv/clear`) — this
+  only clears the RAM view, not any SD file (see below).
+- **SD card** (if a card is present): each **Log Start** opens a new file
+  `/gpm8330_<epoch_ms>.csv` and appends + flushes a row per sample for as long as logging stays
+  on, unbounded by RAM — meant for long unattended test runs. **Log leeren** does not touch SD
+  files (deleting a permanent recording by accident would be worse than a full card). Browse/
+  download recorded files via the **SD-Dateien anzeigen** button on the dashboard (`GET /sdfiles`
+  for the JSON listing, `GET /sdfile?name=...` to download one).
+
+Both backends write identical rows (columns `t_epoch_ms,power1_w,power2_w,power3_w,
+wirkungsgrad_pct,mode`); the sample struct and CSV formatting live together in `src/datalog.cpp` so
+adding more logged values later (e.g. per-channel U/I/S/Q) is a localized change to both at once.
+
+**Timestamps:** the ESP32 has no internet access unless it's joined a WLAN (see "WiFi" below) and
+no battery-backed RTC, so it can't know the wall-clock time on its own by default. Instead, the web
+dashboard sends the browser's `Date.now()` to `GET /settime?t=<epoch_ms>` once on page load; the
+firmware stores the offset to its own `millis()` and uses that to estimate Unix time for each log
+row (`currentEpochMs()` in `src/main.cpp`). Load the dashboard at least once per boot before/while
 logging to get real timestamps — otherwise rows fall back to boot-relative milliseconds. No
 periodic re-sync; expect a few seconds of drift over a very long unattended session.
+
+### WiFi (AP always on + optional STA)
+
+The ESP32 always runs its own `ESP32-GPM8330` access point (`WIFI_AP_STA` mode) — that never turns
+off. It can additionally join an existing WiFi network (e.g. a lab/office network) at the same
+time, mainly so OTA updates and the dashboard are reachable without being on the device's own AP.
+From the web dashboard's **WLAN** section: **Netzwerke suchen** scans and lists nearby SSIDs
+(`GET /wifiscan`, a few seconds — this blocks the main loop briefly, so RS-232 polling/display
+pause for the duration of a scan); tap a network, enter its password, and it connects
+(`GET /wificonnect?ssid=...&password=...`). Credentials are stored in NVS (`Preferences`,
+namespace `wifi`) and reconnected automatically on every boot. Connection status (SSID + IP) shows
+on the web dashboard and on the touch Setup screen.
+
+### SD card logging hardware
+
+Wired in parallel to the display/touch SPI bus (SCK=18, MOSI=19, MISO=23), with its own chip
+select on **GPIO25**. `datalogInit()` mounts it at boot; if no card is present, SD logging is
+silently skipped and the RAM ring buffer still works normally. See "CSV logging" above for how the
+two logging backends interact.
 
 ### OTA updates
 
 `ArduinoOTA` is enabled (hostname `gpm8330-monitor`, password = the AP password). To flash over
-WiFi instead of USB, connect to the `ESP32-GPM8330` AP and run:
+WiFi instead of USB, connect to the `ESP32-GPM8330` AP (or be on the same network as the device if
+it has also joined one via STA, see "WiFi" above) and run:
 
 ```
 pio run -t upload -e esp32dev_ota
 ```
 
 USB flashing remains the default (`pio run -t upload -e esp32dev`); OTA only works once the
-firmware with `ArduinoOTA` support is already on the device via a first USB flash.
+firmware with `ArduinoOTA` support is already on the device via a first USB flash. The
+`esp32dev_ota` environment's `upload_port` is hardcoded to the AP's fixed `192.168.4.1` since
+that's always predictable; to flash over the STA network instead, override it on the command line,
+e.g. `pio run -t upload -e esp32dev_ota --upload-port <device's STA IP>` (see the touch Setup
+screen or web dashboard for that IP).
 
 ## Hardware
 
@@ -131,9 +168,13 @@ firmware with `ArduinoOTA` support is already on the device via a first USB flas
   | SDO (MISO) | 23 |
   | T_CS   | 14 |
   | T_IRQ  | 32 (wired but unused — TFT_eSPI polls touch over SPI, not via interrupt) |
+  | SD_CS  | 25 (SD slot on the display module, shares SCK/MOSI/MISO with the display/touch) |
 
   All pin/driver config lives in `platformio.ini`'s `build_flags` (no edits to the TFT_eSPI
-  library itself); adjust it there if you rewire anything.
+  library itself); adjust it there if you rewire anything. Display orientation is set by
+  `DISPLAY_ROTATION` in `src/display.cpp` (currently `3` — landscape, rotated 180° from the
+  panel's natural orientation to match this enclosure). Touch calibration is invalidated
+  automatically if you change this constant (see the comment in `calibrateTouch()`).
 
 ## Build & flash (PlatformIO)
 
@@ -174,10 +215,13 @@ Three small chips in the title bar toggle secondary, less-frequently-used settin
 - **M/M** (top-left) — show/hide the Min/Max row (see "Min/Max tracking" above).
 - **PRE** (middle) — PRESET-skip experiment toggle (see "Front panel lock" above); intentionally
   temporary, expect this chip to be removed once the RS-232 hypothesis has been tested.
-- **SET** (top-right) — opens a **Setup screen** showing the AP SSID/password, the (currently
-  static — AP-only, no STA mode yet) connection mode, and the device IP, plus a button to toggle
-  CSV logging from the bench without needing the web UI. Tap **SET** again to return to the
-  dashboard.
+- **SET** (top-right) — opens a **Setup screen** showing the AP SSID/password/IP, whether a WiFi
+  network is additionally joined (and its SSID/IP), whether an SD card is detected, and a button
+  to toggle CSV logging from the bench without needing the web UI. Tap **SET** again to return to
+  the dashboard.
+
+WiFi network scanning/joining is web-only by design (see "WiFi" above) — no touch UI for that,
+typing a password on a resistive touchscreen keyboard would be painful.
 
 ## Repo layout
 
@@ -193,18 +237,16 @@ Sorces/                 original Arduino IDE sketch + GPM-8330 user manual (refe
 
 Nicht umgesetzt, aber im Hinterkopf für spätere Runden:
 
-- **Dynamische Verbindungsart auf dem Setup-Screen**: SSID/Passwort/IP werden dort bereits
-  angezeigt (siehe "Touch display" oben), aber der Modus ist noch statisch "Access Point" fest im
-  Code, weil es bislang keinen WLAN-STA-Modus gibt. Sobald das Gerät optional auch einem
-  bestehenden WLAN beitreten kann, sollte diese Zeile den echten Modus (`WiFi.getMode()`) anzeigen.
-- **WLAN-STA-Modus**: dem Labor-/Heim-WLAN zusätzlich zum eigenen AP beitreten (ESP32 kann
-  AP+STA gleichzeitig), damit das Gerät auch ohne direkte Verbindung zum ESP32-eigenen AP
-  erreichbar ist (z.B. für NTP-Zeitsync statt der Browser-Zeit-Synchronisierung).
-- **Web-Settings-Seite**: zentrale Konfigurationsseite (WLAN-Zugangsdaten, Polling-/Log-Intervall,
-  Ringpuffer-Größe etc.), statt Konstanten im Code zu ändern.
+- **NTP-Zeitsync**: sobald WLAN-STA verbunden ist, könnte die Zeit per NTP synchronisiert werden
+  statt (oder zusätzlich zu) der Browser-`Date.now()`-Synchronisierung — würde auch ohne
+  Dashboard-Aufruf korrekte Zeitstempel liefern, u.a. für die Dauer von SD-Aufzeichnungen ohne
+  angeschlossenen Browser.
+- **Web-Settings-Seite**: zentrale Konfigurationsseite (Polling-/Log-Intervall, Ringpuffer-Größe,
+  AP-SSID/Passwort etc.), statt Konstanten im Code zu ändern.
 - **Weitere Messgrößen im CSV-Log**: U/I/S/Q etc. je Kanal zusätzlich zu P/Wirkungsgrad
   aufzeichnen (Datenstruktur in `src/datalog.cpp` ist dafür bereits so angelegt).
-- **SD-Karten-Logging**: falls das Display-Modul einen SD-Slot hat, langfristige Aufzeichnung ohne
-  RAM-Limit (Ringpuffer ist aktuell auf ~30 min begrenzt).
+- **Mehrere gespeicherte WLANs**: aktuell wird nur ein WLAN (das zuletzt über `/wificonnect`
+  verbundene) in NVS gespeichert; eine Liste mehrerer Netzwerke mit Priorität wäre komfortabler
+  beim Wechsel zwischen mehreren Standorten.
 - **Fehler-Piepser**: zurückgestellt, da aktuell keine Buzzer-Hardware vorhanden; Code wäre klein
   (ein `tone()`-Aufruf bei Fehler-Flanke), sobald ein Summer verfügbar ist.

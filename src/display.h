@@ -22,6 +22,10 @@ struct DisplayState {
   bool skipPreset;
   bool showMinMax;
   bool datalogEnabled;
+  bool staConnected; // zusaetzlich zum immer aktiven AP mit einem bestehenden WLAN verbunden
+  String staSsid;
+  String staIp;
+  bool sdAvailable;
 };
 
 enum DisplayAction {

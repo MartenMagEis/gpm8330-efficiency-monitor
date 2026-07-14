@@ -7,6 +7,7 @@
 #include <WebServer.h>
 #include <HardwareSerial.h>
 #include <ArduinoOTA.h>
+#include <Preferences.h>
 #include "display.h"
 #include "datalog.h"
 
@@ -47,6 +48,30 @@ bool timeSynced = false;
 uint64_t currentEpochMs() {
   if (!timeSynced) return millis();
   return (uint64_t)((int64_t)millis() + timeSyncOffsetMs);
+}
+
+// WLAN-Zugangsdaten (zusaetzlich zum immer aktiven eigenen AP) landen in NVS,
+// damit das Geraet nach einem Reboot automatisch wieder verbindet.
+Preferences wifiPrefs;
+
+void connectSavedWifi() {
+  wifiPrefs.begin("wifi", true);
+  String savedSsid = wifiPrefs.getString("ssid", "");
+  String savedPass = wifiPrefs.getString("pass", "");
+  wifiPrefs.end();
+  if (savedSsid.length() > 0) {
+    Serial.println("📶 Verbinde mit gespeichertem WLAN: " + savedSsid);
+    WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+  }
+}
+
+void startWifiConnect(const String& newSsid, const String& newPassword) {
+  wifiPrefs.begin("wifi", false);
+  wifiPrefs.putString("ssid", newSsid);
+  wifiPrefs.putString("pass", newPassword);
+  wifiPrefs.end();
+  Serial.println("📶 Verbinde mit WLAN: " + newSsid);
+  WiFi.begin(newSsid.c_str(), newPassword.c_str());
 }
 
 String lastSentCommand = "";
@@ -225,6 +250,10 @@ DisplayState computeMetrics() {
   s.skipPreset = skipPreset;
   s.showMinMax = showMinMax;
   s.datalogEnabled = datalogIsEnabled();
+  s.staConnected = (WiFi.status() == WL_CONNECTED);
+  s.staSsid = s.staConnected ? WiFi.SSID() : "";
+  s.staIp = s.staConnected ? WiFi.localIP().toString() : "";
+  s.sdAvailable = datalogSdAvailable();
   return s;
 }
 
@@ -247,6 +276,10 @@ String generiereJSON(const DisplayState& s) {
   json += "\"maxWirkungsgrad\":" + String(s.maxWirkungsgrad, 2) + ",";
   json += "\"rmtEnabled\":" + String(s.rmtEnabled ? "true" : "false") + ",";
   json += "\"datalogEnabled\":" + String(s.datalogEnabled ? "true" : "false") + ",";
+  json += "\"staConnected\":" + String(s.staConnected ? "true" : "false") + ",";
+  json += "\"staSsid\":\"" + s.staSsid + "\",";
+  json += "\"staIp\":\"" + s.staIp + "\",";
+  json += "\"sdAvailable\":" + String(s.sdAvailable ? "true" : "false") + ",";
   json += "\"error\":" + String(s.rs232Error ? "true" : "false");
   json += "}";
   return json;
@@ -301,11 +334,32 @@ String generiereWebseite() {
   html += "modeBtn.innerText = currentCascade ? 'Kaskade' : 'Parallel'; modeBtn.style.backgroundColor = currentCascade ? 'green' : 'gray';";
   html += "let logBtn = document.getElementById('logBtn');";
   html += "logBtn.innerText = currentLog ? 'Log Stop' : 'Log Start'; logBtn.style.backgroundColor = currentLog ? 'green' : 'gray';";
+  html += "document.getElementById('wifiStatus').innerHTML = d.staConnected ? ('Verbunden mit ' + d.staSsid + ' (' + d.staIp + ')') : 'Nicht mit einem WLAN verbunden (eigener AP laeuft weiter)';";
+  html += "document.getElementById('sdStatus').innerHTML = d.sdAvailable ? 'SD-Karte bereit' : 'Keine SD-Karte erkannt';";
   html += "});}";
   html += "function toggleRMT() { fetch('/rmt?enabled=' + (currentRmt ? '0' : '1')); }";
   html += "function toggleMode() { fetch('/mode?cascade=' + (currentCascade ? '0' : '1')); }";
   html += "function toggleLog() { fetch('/log?enabled=' + (currentLog ? '0' : '1')); }";
   html += "function clearLog() { fetch('/csv/clear'); }";
+  html += "function scanWifi() {";
+  html += "document.getElementById('wifiList').innerHTML = 'Suche...';";
+  html += "fetch('/wifiscan').then(r => r.json()).then(nets => {";
+  html += "let html = '';";
+  html += "nets.forEach(n => { html += '<div style=\"margin:4px 0;\"><button class=\"btn btn-dark\" style=\"flex:0 0 260px;\" onclick=\"connectWifi(\\'' + n.ssid.replace(/'/g, \"\\\\'\") + '\\')\">' + n.ssid + ' (' + n.rssi + ' dBm)</button></div>'; });";
+  html += "document.getElementById('wifiList').innerHTML = html || 'Keine Netzwerke gefunden';";
+  html += "});}";
+  html += "function connectWifi(ssid) {";
+  html += "let pass = document.getElementById('wifiPass').value;";
+  html += "fetch('/wificonnect?ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pass));";
+  html += "document.getElementById('wifiList').innerHTML = 'Verbinde mit ' + ssid + ' ...';";
+  html += "}";
+  html += "function loadSdFiles() {";
+  html += "document.getElementById('sdFileList').innerHTML = 'Lade...';";
+  html += "fetch('/sdfiles').then(r => r.json()).then(files => {";
+  html += "let html = '';";
+  html += "files.forEach(f => { html += '<div><a href=\"/sdfile?name=' + encodeURIComponent(f.name) + '\">' + f.name + '</a> (' + (f.size/1024).toFixed(1) + ' KB)</div>'; });";
+  html += "document.getElementById('sdFileList').innerHTML = html || 'Keine Dateien';";
+  html += "});}";
   html += "setInterval(aktualisieren, 500);";
   html += "window.onload = function() { fetch('/settime?t=' + Date.now()); aktualisieren(); };";
   html += "</script>";
@@ -329,6 +383,22 @@ String generiereWebseite() {
   html += "<a href='/csv' style='text-decoration:none;'><button class='btn btn-dark'>CSV laden</button></a>";
   html += "<button class='btn btn-dark' onclick=\"clearLog()\">Log leeren</button>";
   html += "</div>";
+
+  html += "<h2>WLAN</h2>";
+  html += "<div id='wifiStatus' style='font-size:0.8em;'>--</div>";
+  html += "<div class='btnrow'>";
+  html += "<input id='wifiPass' type='password' placeholder='Passwort' style='flex:0 0 200px;padding:8px;'>";
+  html += "<button class='btn btn-dark' onclick=\"scanWifi()\">Netzwerke suchen</button>";
+  html += "</div>";
+  html += "<div id='wifiList' style='font-size:0.8em;'></div>";
+
+  html += "<h2>SD-Karte</h2>";
+  html += "<div id='sdStatus' style='font-size:0.8em;'>--</div>";
+  html += "<div class='btnrow'>";
+  html += "<button class='btn btn-dark' onclick=\"loadSdFiles()\">SD-Dateien anzeigen</button>";
+  html += "</div>";
+  html += "<div id='sdFileList' style='font-size:0.8em;'></div>";
+
   html += "</body></html>";
   return html;
 }
@@ -345,7 +415,11 @@ void setup() {
 
   datalogInit();
 
+  // AP bleibt immer aktiv; zusaetzlich optional einem bestehenden WLAN beitreten
+  // (z.B. fuers Buero-/Labornetz, OTA-Updates ohne den ESP32-eigenen AP).
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(ssid, password);
+  connectSavedWifi();
 
   ArduinoOTA.setHostname("gpm8330-monitor");
   ArduinoOTA.setPassword(password);
@@ -370,7 +444,7 @@ void setup() {
   });
   server.on("/log", []() {
     if (server.hasArg("enabled")) {
-      datalogSetEnabled(server.arg("enabled") == "1");
+      datalogSetEnabled(server.arg("enabled") == "1", currentEpochMs());
       Serial.println(datalogIsEnabled() ? "🗒️ CSV-Log gestartet" : "🗒️ CSV-Log gestoppt");
     }
     server.send(200, "text/plain", "OK");
@@ -382,11 +456,38 @@ void setup() {
     datalogClear();
     server.send(200, "text/plain", "OK");
   });
+  server.on("/sdfiles", []() {
+    server.send(200, "application/json", datalogSdFileListJson());
+  });
+  server.on("/sdfile", []() {
+    if (server.hasArg("name")) {
+      datalogDownloadSdFile(server, server.arg("name"));
+    } else {
+      server.send(400, "text/plain", "Parameter 'name' fehlt");
+    }
+  });
   server.on("/settime", []() {
     if (server.hasArg("t")) {
       int64_t epochMs = strtoll(server.arg("t").c_str(), nullptr, 10);
       timeSyncOffsetMs = epochMs - (int64_t)millis();
       timeSynced = true;
+    }
+    server.send(200, "text/plain", "OK");
+  });
+  server.on("/wifiscan", []() {
+    int n = WiFi.scanNetworks();
+    String json = "[";
+    for (int i = 0; i < n; i++) {
+      if (i > 0) json += ",";
+      json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+    }
+    json += "]";
+    WiFi.scanDelete();
+    server.send(200, "application/json", json);
+  });
+  server.on("/wificonnect", []() {
+    if (server.hasArg("ssid")) {
+      startWifiConnect(server.arg("ssid"), server.arg("password"));
     }
     server.send(200, "text/plain", "OK");
   });
@@ -423,8 +524,11 @@ void loop() {
     Serial.println(skipPreset ? "⏭️ PRESET-Skip aktiviert (Touch)" : "⏭️ PRESET-Skip deaktiviert (Touch)");
   } else if (action == DISPLAY_ACTION_TOGGLE_MINMAX) {
     showMinMax = !showMinMax;
+    if (showMinMax) {
+      resetMinMax(); // frischer Beobachtungszeitraum, statt seit dem letzten Reconnect
+    }
   } else if (action == DISPLAY_ACTION_TOGGLE_LOG) {
-    datalogSetEnabled(!datalogIsEnabled());
+    datalogSetEnabled(!datalogIsEnabled(), currentEpochMs());
     Serial.println(datalogIsEnabled() ? "🗒️ CSV-Log gestartet (Touch)" : "🗒️ CSV-Log gestoppt (Touch)");
   }
 }
