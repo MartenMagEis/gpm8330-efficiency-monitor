@@ -149,23 +149,40 @@ two logging backends interact.
 
 ### OTA updates
 
-`ArduinoOTA` is enabled (hostname `gpm8330-monitor`, password = the AP password). To flash over
-WiFi instead of USB, connect to the `ESP32-GPM8330` AP (or be on the same network as the device if
-it has also joined one via STA, see "WiFi" above) and run:
+Two ways to flash over WiFi instead of USB — both need the device already running firmware with
+`ArduinoOTA`/`Update` support via a first USB flash:
+
+**PlatformIO/espota** (`ArduinoOTA` is enabled, hostname `gpm8330-monitor`, password = the AP
+password):
 
 ```
 pio run -t upload -e esp32dev_ota
 ```
 
-USB flashing remains the default (`pio run -t upload -e esp32dev`); OTA only works once the
-firmware with `ArduinoOTA` support is already on the device via a first USB flash. The
-`esp32dev_ota` environment's `upload_port` is hardcoded to the AP's fixed `192.168.4.1` since
-that's always predictable; to flash over the STA network instead, override it on the command line,
-e.g. `pio run -t upload -e esp32dev_ota --upload-port <device's STA IP>` (see the touch Setup
-screen or web dashboard for that IP). In one test this failed at "Waiting for device..." over the
-STA network (auth succeeded, then no callback) while USB worked fine right after — untested
-whether that's a firewall/multi-NIC issue on the flashing PC or something ESP32-side; USB is the
-reliable fallback if OTA hangs like that.
+USB flashing remains the default (`pio run -t upload -e esp32dev`). The `esp32dev_ota`
+environment's `upload_port` is hardcoded to the AP's fixed `192.168.4.1` since that's always
+predictable; to flash over the STA network instead, override it on the command line, e.g.
+`pio run -t upload -e esp32dev_ota --upload-port <device's STA IP>` (see the touch Setup screen or
+web dashboard for that IP).
+
+If that hangs at "Waiting for device..." after "Authenticating...OK", the flashing PC likely has
+**multiple network interfaces** (Ethernet + WiFi + a VPN/WSL/virtual adapter, etc.) and picked the
+wrong one to tell the ESP32 to connect back to. Fix: run `espota.py` directly with an explicit
+host IP on the interface that's actually on the same network as the device
+(`python <path-to-espota.py> -i <device-ip> -I <flashing-PC's-ip-on-that-network> -a 12345678
+-f .pio/build/esp32dev_ota/firmware.bin`, `espota.py` ships inside the
+`framework-arduinoespressif32` package under `tools/`) — confirmed to fix it in practice on a
+3-interface Windows machine. Not baked into `platformio.ini` since the correct host IP is
+machine-specific.
+
+**Web upload** (`GET /update`, HTTP Basic Auth with username `admin` and the AP password): pick a
+compiled `.bin` and upload it through the browser — built with PlatformIO
+(`.pio/build/esp32dev/firmware.bin`) or exported from Arduino IDE (Sketch → Export compiled
+Binary), doesn't matter which, as long as it's built for the same ESP32/partition layout as this
+project (ESP32 uses raw `.bin` images via `esptool`/`Update.h`, not the Intel `.hex` format
+classic AVR Arduino boards use). Implemented with the standard `Update.h` chunked-upload pattern
+in `src/main.cpp`; the device reboots automatically once the upload finishes. A link to this page
+sits at the bottom of the main dashboard under "Firmware".
 
 ## Hardware
 

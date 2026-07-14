@@ -7,6 +7,7 @@
 #include <WebServer.h>
 #include <HardwareSerial.h>
 #include <ArduinoOTA.h>
+#include <Update.h>
 #include <Preferences.h>
 #include <sys/time.h>
 #include "display.h"
@@ -456,6 +457,10 @@ String generiereWebseite() {
   html += "</div>";
   html += "<div id='sdFileList' style='font-size:0.8em;'></div>";
 
+  html += "<h2>Firmware</h2>";
+  html += "<div class='btnrow'><a href='/update' style='text-decoration:none;'>"
+          "<button class='btn btn-dark'>Firmware-Update</button></a></div>";
+
   html += "</body></html>";
   return html;
 }
@@ -575,6 +580,60 @@ void setup() {
       startWifiConnect(server.arg("ssid"), server.arg("password"));
     }
     server.send(200, "text/plain", "OK");
+  });
+
+  // Web-Firmware-Update: kompiliertes .bin hochladen (PlatformIO oder Arduino IDE,
+  // gleicher Chip/Partitionsplan - ESP32 nutzt Rohbinaries, keine Intel-HEX-Dateien
+  // wie klassische AVR-Boards). Alternative zu USB/ArduinoOTA, per HTTP-Basic-Auth
+  // mit dem AP-Passwort geschuetzt.
+  server.on("/update", HTTP_GET, []() {
+    if (!server.authenticate("admin", password)) {
+      return server.requestAuthentication();
+    }
+    String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+                  "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                  "<title>Firmware-Update</title>"
+                  "<style>body{font-family:sans-serif;text-align:center;font-size:1.2em;margin:20px;}"
+                  "button{padding:10px 20px;font-size:1em;border:none;border-radius:6px;background:#444;color:white;cursor:pointer;}</style>"
+                  "</head><body>"
+                  "<h2>Firmware-Update (.bin)</h2>"
+                  "<p style='font-size:0.7em;color:#666;'>Kompiliertes .bin hochladen (PlatformIO: "
+                  ".pio/build/esp32dev/firmware.bin, oder Arduino IDE: Sketch &rarr; Kompilierte "
+                  "Binaerdatei exportieren) - beide funktionieren, solange fuer denselben ESP32 "
+                  "gebaut.</p>"
+                  "<form method='POST' action='/update' enctype='multipart/form-data'>"
+                  "<input type='file' name='firmware' accept='.bin'><br><br>"
+                  "<button type='submit'>Hochladen &amp; flashen</button>"
+                  "</form>"
+                  "</body></html>";
+    server.send(200, "text/html", html);
+  });
+  server.on("/update", HTTP_POST, []() {
+    if (!server.authenticate("admin", password)) {
+      return server.requestAuthentication();
+    }
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/plain", Update.hasError() ? "Update fehlgeschlagen, siehe Serial Monitor" : "Update erfolgreich, Geraet startet neu...");
+    delay(1000);
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("⬆️ Firmware-Upload gestartet: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) {
+        Serial.printf("⬆️ Firmware-Upload erfolgreich: %u Bytes\n", upload.totalSize);
+      } else {
+        Update.printError(Serial);
+      }
+    }
   });
 
   displayInit(ssid, password, WiFi.softAPIP().toString());
